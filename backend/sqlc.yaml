@@ -1,0 +1,33 @@
+version: "2"
+sql:
+  - engine: "postgresql"
+    schema: "db/schema"
+    queries: "db/query"
+    gen:
+      go:
+        package: "db"
+        out: "db/sqlc"
+        sql_package: "pgx/v5" # Connects sqlc directly to pgx!
+        overrides:
+          # sqlc has no built-in mapping for citext, so without these it emits
+          # interface{}. Keeping citext (rather than TEXT + LOWER() indexes) puts
+          # case-insensitivity in the database instead of in every call site.
+          - db_type: "citext"
+            go_type: "string"
+          - db_type: "citext"
+            nullable: true
+            go_type:
+              import: "github.com/jackc/pgx/v5/pgtype"
+              type: "Text"
+          # inet defaults to netip.Prefix under pgx/v5, which is a strange type
+          # for a single client IP. Every inet column here is nullable.
+          - db_type: "inet"
+            go_type:
+              import: "net/netip"
+              type: "Addr"
+          - db_type: "inet"
+            nullable: true
+            go_type:
+              import: "net/netip"
+              type: "Addr"
+              pointer: true

@@ -1,0 +1,182 @@
+model
+  schema 1.1
+
+# Draft. Validated with `fga model validate` AND against a live server — the two disagree,
+# see the note above `within_vote_window` at the bottom of this file.
+#
+# Tuples here are *derived* from Postgres, never authored directly. Postgres is the source of
+# truth (docs/data-model.md §14); this file is a mechanical projection of it, with exactly one
+# exception, documented on `user#blocked`.
+#
+# The rules in plain language, per use case, live in docs/permissions.md. That file also carries
+# the *residual* Go checks — what must be true in addition to a Check returning true. Read it
+# before wiring a handler; this file alone makes authorization look finished.
+#
+# Conditions must be declared AFTER all types (the grammar requires it), so they are at the end.
+#
+# Deliberately absent: `song` (the catalog is world-readable), `user_session`, `friend_request`,
+# `friendship`, `activity_log`, geo distance, and resource state (`events.status`, `deleted_at`).
+
+type user
+  relations
+    # `self` is a reserved keyword in the DSL, hence `account_owner`. It means "is this user".
+    define account_owner: [user]
+    define anyone: [user:*]
+
+    # One `user_blocks` row is written as TWO tuples, one per direction. This is the single place
+    # tuples are not a transcription of Postgres: a one-way block is a mute, not a harassment
+    # control, so enforcement is symmetric even though the DB row is directional.
+    define blocked: [user]
+
+    # --- account: only the account holder, always ---------------------------------------
+    define can_edit_profile: account_owner
+    define can_manage_account: account_owner      # email, password, delete account
+    define can_manage_sessions: account_owner     # list and revoke user_sessions rows
+    define can_manage_devices: account_owner      # register, rename, deactivate devices
+    define can_manage_preferences: account_owner  # user_music_preferences rows
+
+    # --- base profile card: display_name + avatar ----------------------------------------
+    define can_view_profile: anyone but not blocked
+
+    # --- social actions, checked on the TARGET user --------------------------------------
+    define can_send_friend_request: anyone but not blocked
+    define can_receive_invitation: anyone but not blocked   # add to a playlist/event invite list
+
+    # Per-field profile visibility (§6) is not here: GetUser applies it from the
+    # user_profiles row and the friendships row (internal/user/access.go). It
+    # decides what a response contains, not whether it is sent.
+
+type playlist
+  relations
+    define owner: [user]
+    define admin: [user]
+    define editor: [user]
+    define viewer: [user]
+    define public: [user:*]
+    define open_edit: [user:*]
+
+    define member: owner or admin or editor or viewer
+    define can_view: member or public
+
+    # add_song / remove_song / move_song are one permission. §9.1 defines a single write
+    # access, and a viewer who may add but not remove is a product decision nobody has made.
+    #
+    # `can_view and open_edit`, never bare `open_edit`: visibility and edit_license are
+    # independent columns, so a private playlist with edit_license = 'everyone' would otherwise
+    # be world-writable. That is the worst available failure mode.
+    define can_edit_songs: owner or admin or editor or (can_view and open_edit)
+
+    define can_rename: owner or admin
+    define can_set_cover: owner or admin
+    define can_change_visibility: owner or admin
+    define can_change_license: owner or admin
+    define can_invite: owner or admin or editor
+    define can_manage_members: owner or admin
+    define can_delete: owner
+    define can_transfer_ownership: owner
+
+type event
+  relations
+    define host: [user]
+    define admin: [user]
+    define editor: [user]
+    define viewer: [user]
+    define public: [user:*]
+
+    # Mutually exclusive: `vote_license` is a single enum column, so exactly one of these three
+    # flags exists per event. The sync layer deletes the other two on a license change.
+    define open_vote: [user:*]
+    define invited_vote: [user:*]
+    define window_vote: [user:* with within_vote_window]
+
+    define member: host or admin or editor or viewer
+    define can_view: member or public
+
+    # Under `location_time` there is no membership fallback: the host cannot vote from home.
+    # That is a strict reading of §10.3, taken deliberately. Add `or member` here to relax it.
+    define can_vote_everyone: can_view and open_vote
+    define can_vote_invited: member and invited_vote
+    define can_vote_window: can_view and window_vote
+    define can_vote: can_vote_everyone or can_vote_invited or can_vote_window
+
+    # The subject phrases it as one capability ("anyone can suggest or vote for the next
+    # track"), so suggesting is gated by the same license as voting. Split it into its own
+    # relation if suggesting should ever be more open than voting.
+    define can_suggest_song: can_vote
+
+    # Playback control from the *event* side. The delegated-device path is a separate check
+    # on `device` — see docs/permissions.md, "Devices and control delegation".
+    define can_control_playback: host or admin
+    define can_manage_queue: host or admin      # skip, remove someone else's entry, reorder
+    define can_change_settings: host or admin   # name, visibility, license, venue, window
+    define can_change_status: host or admin     # scheduled -> live -> ended
+    define can_invite: host or admin or editor
+    define can_manage_members: host or admin
+    define can_delete: host
+    define can_transfer_ownership: host
+
+type queue_entry
+  relations
+    define parent: [event]
+    define suggester: [user]
+
+    define can_view: can_view from parent
+    define can_vote: can_vote from parent
+    define can_remove: suggester or can_manage_queue from parent
+
+type device
+  relations
+    define owner: [user]
+
+    # A control licence is not here: the device_control_licenses row is the permission
+    # (event/access.go canControlPlayback). A tuple is unique per (friend, device), and a
+    # friend may hold one licence per event on the same device.
+
+    define can_view: owner
+    define can_rename: owner
+    define can_delete: owner
+    define can_grant_control: owner
+    define can_revoke_control: owner
+
+type image
+  relations
+    define owner: [user]
+
+    # Avatars. Product decision, taken deliberately: there is no `avatar_visibility` column in
+    # §6 and none is wanted — anyone may view a profile picture.
+    define public: [user:*]
+
+    define playlist_cover_of: [playlist]
+    define event_cover_of: [event]
+    define original: [image]
+
+    # Flat `or` chain on purpose: a parenthesised `from` expression is awkward to read and buys
+    # nothing here. `original` lets a resized derivative inherit the source image's audience.
+    define can_view: owner or public or can_view from playlist_cover_of or can_view from event_cover_of or can_view from original
+    define can_delete: owner
+
+# --- conditions -------------------------------------------------------------------------------
+#
+# Two hard limits, both learned the hard way:
+#
+#   1. A condition expression is capped at 512 bytes. `fga model validate` does NOT check this —
+#      it reports is_valid: true and the server then rejects WriteAuthorizationModel with
+#      "invalid Condition.Expression: value length must be at most 512 bytes". Keep these short.
+#   2. CEL has no local bindings, so a repeated subexpression cannot be factored out; the only
+#      way to stay under the cap is to need it once.
+
+# Daily wall-clock window, in minutes since local midnight. Minutes rather than "16:00" because
+# CEL cannot parse a clock string; the timezone is a parameter because getHours/getMinutes need
+# one and the venue's zone is not the server's.
+#
+# The modular form handles a window crossing midnight (22:00 -> 02:00) in the same branch as a
+# normal one, which is what keeps it under the 512-byte cap. Both operands stay positive for
+# inputs in 0..1439, so CEL's truncate-toward-zero `%` never sees a negative — validate that
+# range at write time. start == end means an empty window, not a full day.
+#
+# This covers the TIME half of `location_time` only. CEL has no geospatial functions, so the
+# venue radius stays a Go check after Check passes: a pass means "in the window", never "at the
+# venue".
+condition within_vote_window(current_time: timestamp, window_start_minutes: int, window_end_minutes: int, venue_timezone: string) {
+    (current_time.getHours(venue_timezone) * 60 + current_time.getMinutes(venue_timezone) - window_start_minutes + 1440) % 1440 < (window_end_minutes - window_start_minutes + 1440) % 1440
+}

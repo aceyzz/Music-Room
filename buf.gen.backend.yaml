@@ -1,0 +1,24 @@
+version: v2
+# The backend half of buf.gen.yaml: what the backend image (backend/Dockerfile)
+# and `make docker-generate` run. No Dart plugin here -- protoc-gen-dart is not
+# in a Go container, and the backend does not need the Flutter stubs.
+plugins:
+  - local: protoc-gen-go
+    out: backend/gen/go
+
+  - local: protoc-gen-go-grpc
+    out: backend/gen/go
+
+  - local: protoc-gen-grpc-gateway
+    out: backend/gen/go
+    opt:
+      - generate_unbound_methods=true
+
+  # go:embed'ed by backend/internal/apidocs: the build fails without it.
+  - local: protoc-gen-openapiv2
+    out: backend/internal/apidocs
+    strategy: all
+    opt:
+      - allow_merge=true
+      - merge_file_name=api_spec
+      - json_names_for_fields=false

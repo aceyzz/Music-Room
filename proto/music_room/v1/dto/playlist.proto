@@ -1,0 +1,81 @@
+syntax = "proto3";
+
+package music_room.v1;
+
+import "music_room/v1/dto/song.proto";
+
+option go_package = "music_room/v1;pbv1";
+
+// A playlist (Music Playlist Editor) as the caller is allowed to see it.
+message PlaylistDTO {
+  int64 id = 1; // internal id; clients use public_id.
+  string public_id = 2; // the UUID clients name this playlist by.
+  int64 owner_id = 3; // internal id of the owner.
+  string name = 4;
+  string cover_storage_key = 5; // empty if no cover; served at GET /media/{cover_storage_key}
+  string visibility = 6; // public | private
+  int32 song_count = 7;
+  int32 total_duration_seconds = 8;
+  int64 deleted_at = 9; // unix seconds; 0 = not deleted.
+  int64 created_at = 10; // unix seconds.
+  int64 updated_at = 11; // unix seconds.
+  string edit_license = 12; // everyone | invited_only
+  int64 revision = 13; // latest revision; see PlaylistOpDTO.
+}
+
+// A playlist as a list shows it (the app's Playlists tab), with how the
+// caller relates to it.
+message PlaylistListItemDTO {
+  string public_id = 1;
+  string name = 2;
+  int32 song_count = 3;
+  // The owner, admins and editors in playlist_members. People who may edit
+  // only because the licence is "everyone" are not counted.
+  int32 editor_count = 4;
+  string owner_public_id = 5;
+  string owner_display_name = 6;
+  string first_song_cover_url = 7; // album art of the first song; empty for an empty playlist.
+  // mine (owner) | shared (member, not owner) | friend (a friend owns it,
+  // caller not a member) | public. First match wins.
+  string relation = 8;
+  // Separate from relation, so a friend's playlist the caller edits counts
+  // as both shared and a friend's.
+  bool owner_is_friend = 9;
+  string visibility = 10; // public | private: the list marks a private one with a lock.
+}
+
+// One song at one position in a playlist.
+message PlaylistSongDTO {
+  int64 id = 1; // internal id of this entry (the playlist_song_id other RPCs take).
+  int64 playlist_id = 2; // internal id.
+  int64 song_id = 3; // internal id in the song cache, not the Deezer id.
+  int32 position = 4; // 1-based index in the playlist as read; stored positions are sparse.
+  int64 added_by_id = 5; // internal id of the user who added it.
+  int64 created_at = 6; // unix seconds.
+  SongDTO song = 7;
+}
+
+// A member of a playlist: the owner, or a user invited so they can find a
+// private playlist and, if the edit license requires it, edit it.
+message PlaylistMemberDTO {
+  int64 user_id = 1; // internal id; clients use user_public_id.
+  string display_name = 2;
+  string role = 3; // owner | admin | editor | viewer
+  int64 joined_at = 4; // unix seconds.
+  string user_public_id = 5; // the id to open their profile with (UserService.GetUser).
+  string avatar_storage_key = 6; // empty when they have no picture; served under /media/.
+}
+
+// One row of playlist_ops -- a single mutation, at the revision it produced.
+// Gapless and totally ordered per playlist (see ListPlaylistOpsSince), so a
+// reconnecting client can replay op_type/payload in revision order instead
+// of refetching the whole playlist.
+message PlaylistOpDTO {
+  int64 id = 1;
+  int64 playlist_id = 2; // internal id.
+  int64 revision = 3; // the playlist revision this op produced.
+  int64 actor_id = 4; // 0 if not recorded.
+  string op_type = 5; // rename | add_song | remove_song | move_song | visibility_change | license_change | ownership_transfer
+  string payload = 6; // JSON text; shape depends on op_type.
+  int64 created_at = 7; // unix seconds.
+}

@@ -1,0 +1,42 @@
+syntax = "proto3";
+
+package music_room.v1;
+
+import "google/protobuf/any.proto";
+
+option go_package = "music_room/v1;pbv1";
+
+// Keep-alive sent by the server on a long-lived stream.
+message ServerHeartbeatDTO {
+  int64 timestamp = 1; // unix seconds.
+}
+
+// Playback progress update for a stream.
+message UpdateProgressDTO {
+  int64 position_ms = 1; // playhead position, milliseconds.
+}
+
+// Asks the other side to close the stream. No fields.
+message CloseStreamActionDTO {}
+
+// Fallback message for unhandled, generic, or raw binary payloads.
+message RawPayloadDTO {
+  bytes data = 1;
+}
+
+// Binary envelope for a request sent over the /ws WebSocket.
+message SocketRequestDTO {
+  string id = 1; // client-chosen id, echoed back in SocketResponseDTO.id.
+  string event = 2; // name of the action to dispatch.
+
+  // Holds typed binary Protobuf payloads
+  google.protobuf.Any payload = 3;
+}
+
+// Binary envelope for a reply on the /ws WebSocket.
+message SocketResponseDTO {
+  string id = 1; // the SocketRequestDTO.id this answers.
+  int32 status_code = 2; // HTTP-style status code.
+  google.protobuf.Any data = 3; // typed result; unset on error.
+  string error_message = 4; // empty on success.
+}

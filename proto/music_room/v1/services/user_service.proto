@@ -1,0 +1,395 @@
+syntax = "proto3";
+package music_room.v1;
+
+import "google/api/annotations.proto";
+import "music_room/v1/dto/user.proto";
+
+option go_package = "music_room/v1;pbv1";
+
+// Public UUIDs on the wire, internal ids inside the server.
+//
+// Every request that names an object carries its `*_public_id` -- the UUID the
+// API hands back in a DTO. The matching int64 field is filled in by the
+// authorization interceptor once it has resolved that UUID and run the
+// permission check, so a client never sends one. That is what makes the object
+// that was CHECKED and the row the handler TOUCHES provably the same object.
+//
+// The caller's own id comes from the session token, never from the request: a
+// `*_public_id` naming the caller is verified against the session and rejected
+// when it disagrees. See backend/internal/interceptor/policy.go and
+// docs/permissions.md.
+
+service UserService {
+  // Reads a user's profile, filtered field by field for the caller.
+  //
+  // Any signed-in user may call it. Each field is returned only if its
+  // visibility (public, friends, private) allows it for the caller; hidden
+  // fields come back empty. You always see your whole own profile. Returns
+  // NotFound if the user does not exist or if either user has blocked the
+  // other.
+  rpc GetUser(GetUserRequest) returns (GetUserResponse) {
+    option (google.api.http) = {get: "/v1/users/{public_id}"};
+  }
+  // Updates the caller's own profile and its per-field visibility.
+  //
+  // Only the account owner may call it. Partial update. Each profile field is
+  // `optional`: absent means "leave unchanged", present and empty means
+  // "clear it". The visibility scopes are plain strings, '' = unchanged: a
+  // scope always has a value. Creates the profile row on the first call.
+  rpc UpdateUserProfile(UpdateUserProfileRequest) returns (UpdateUserProfileResponse) {
+    option (google.api.http) = {
+      patch: "/v1/users/{user_public_id}/profile"
+      body: "*"
+    };
+  }
+  // Replaces the caller's music preferences.
+  //
+  // Only the account owner may call it. Replaces the whole preference set
+  // (delete + reinsert), not a per-genre upsert: send the full list every
+  // time. An empty list clears them all.
+  rpc SetMusicPreferences(SetMusicPreferencesRequest) returns (SetMusicPreferencesResponse) {
+    option (google.api.http) = {
+      put: "/v1/users/{user_public_id}/music-preferences"
+      body: "*"
+    };
+  }
+
+  // Sets or replaces the caller's avatar.
+  //
+  // Only the account owner may call it. Uploads an avatar: image_data goes
+  // through the Rust image-service to produce a square thumbnail, both the
+  // original and the thumbnail are stored, and any previous avatar is
+  // replaced (old files and images rows removed). See
+  // internal/user/service.go.
+  rpc UploadAvatar(UploadAvatarRequest) returns (UploadAvatarResponse) {
+    option (google.api.http) = {
+      post: "/v1/users/{user_public_id}/avatar"
+      body: "*"
+    };
+  }
+  // Removes the caller's avatar.
+  //
+  // Only the account owner may call it. Succeeds even when there is no
+  // avatar.
+  rpc DeleteAvatar(DeleteAvatarRequest) returns (DeleteAvatarResponse) {
+    option (google.api.http) = {delete: "/v1/users/{user_public_id}/avatar"};
+  }
+
+  // Lists the caller's friends.
+  //
+  // Only the account owner may call it: you cannot list someone else's
+  // friends. Sorted by display name.
+  rpc GetFriends(GetFriendsRequest) returns (GetFriendsResponse) {
+    option (google.api.http) = {get: "/v1/users/{user_public_id}/friends"};
+  }
+
+  // Sends a friend request to another user.
+  //
+  // The caller sends it as themselves. Refused with PermissionDenied if
+  // either user has blocked the other or if the addressee does not exist;
+  // AlreadyExists if they are already friends or a request is pending either
+  // way.
+  rpc SendFriendRequest(SendFriendRequestRequest) returns (SendFriendRequestResponse) {
+    option (google.api.http) = {
+      post: "/v1/users/{requester_public_id}/friend-requests"
+      body: "*"
+    };
+  }
+  // Lists the caller's pending friend requests.
+  //
+  // Only the account owner may call it. Incoming by default, or outgoing.
+  // Newest first.
+  rpc ListFriendRequests(ListFriendRequestsRequest) returns (ListFriendRequestsResponse) {
+    option (google.api.http) = {get: "/v1/users/{user_public_id}/friend-requests"};
+  }
+  // Accepts a pending friend request and creates the friendship.
+  //
+  // Only the request's addressee may call it. Returns NotFound if the
+  // request does not exist, is not addressed to the caller, or is no longer
+  // pending.
+  rpc AcceptFriendRequest(AcceptFriendRequestRequest) returns (AcceptFriendRequestResponse) {
+    option (google.api.http) = {
+      post: "/v1/friend-requests/{request_id}/accept"
+      body: "*"
+    };
+  }
+  // Declines a pending friend request.
+  //
+  // Only the request's addressee may call it. Same NotFound cases as
+  // AcceptFriendRequest.
+  rpc DeclineFriendRequest(DeclineFriendRequestRequest) returns (DeclineFriendRequestResponse) {
+    option (google.api.http) = {
+      post: "/v1/friend-requests/{request_id}/decline"
+      body: "*"
+    };
+  }
+
+  // Blocks another user.
+  //
+  // The caller blocks as themselves; the target must exist. Succeeds if
+  // already blocked. Blocking also ends any existing friendship and cancels
+  // any pending friend request between the two users (see
+  // internal/user/service.go).
+  rpc BlockUser(BlockUserRequest) returns (BlockUserResponse) {
+    option (google.api.http) = {
+      post: "/v1/users/{blocker_public_id}/blocks"
+      body: "*"
+    };
+  }
+  // Removes a block the caller placed.
+  //
+  // The caller unblocks as themselves; the target must exist. Succeeds if
+  // there was no block.
+  rpc UnblockUser(UnblockUserRequest) returns (UnblockUserResponse) {
+    option (google.api.http) = {delete: "/v1/users/{blocker_public_id}/blocks/{blocked_public_id}"};
+  }
+  // Lists the users the caller has blocked.
+  //
+  // Only the account owner may call it. Most recent block first.
+  rpc ListBlockedUsers(ListBlockedUsersRequest) returns (ListBlockedUsersResponse) {
+    option (google.api.http) = {get: "/v1/users/{blocker_public_id}/blocks"};
+  }
+
+  // Returns where the caller stands with one user.
+  //
+  // Any signed-in user may call it about any existing user. Where the caller
+  // stands with one user: friends, a pending request either way, or blocked
+  // by the caller. Answers even when a block exists, unlike GetUser, so a
+  // profile page can still offer Unblock. A block by the OTHER user is never
+  // reported: it reads as `none` (docs/permissions.md §5).
+  rpc GetUserRelationship(GetUserRelationshipRequest) returns (GetUserRelationshipResponse) {
+    option (google.api.http) = {get: "/v1/users/{target_public_id}/relationship"};
+  }
+  // Ends a friendship.
+  //
+  // The caller removes a friend as themselves; the friend must exist. Ends a
+  // friendship, and takes back every device grant between the two:
+  // delegation is friends-only at grant time, so nothing else would
+  // (docs/permissions.md §11). Succeeds when they were not friends.
+  rpc RemoveFriend(RemoveFriendRequest) returns (RemoveFriendResponse) {
+    option (google.api.http) = {delete: "/v1/users/{user_public_id}/friends/{friend_public_id}"};
+  }
+  // Searches users by display name.
+  //
+  // Any signed-in user may call it, for themselves. People whose display name
+  // contains `query`, case-insensitively, names starting with it first.
+  // Never the caller, nor anyone with a block either way. Display name only,
+  // not email: matching emails would tell anyone whether an address has an
+  // account. A blank query returns nobody.
+  rpc SearchUsers(SearchUsersRequest) returns (SearchUsersResponse) {
+    option (google.api.http) = {get: "/v1/users/{viewer_public_id}/search"};
+  }
+}
+
+// Asks for one user's profile as seen by the caller.
+message GetUserRequest {
+  int64 id = 1; // Filled by the server; clients leave it unset.
+  int64 viewer_id = 2; // Filled by the server from the session; clients leave it unset.
+  string public_id = 3; // The user to read.
+  string viewer_public_id = 4; // the caller; must match the session.
+}
+
+// The profile, with the fields hidden from the caller left empty.
+message GetUserResponse {
+  UserDTO user = 1;
+}
+
+// Partial update of the caller's profile and visibility settings.
+message UpdateUserProfileRequest {
+  int64 user_id = 1; // Filled by the server; clients leave it unset.
+  // Explicit presence, so "not sent" and "sent empty" differ (see the RPC).
+  // Were plain strings, where both read as '' and nothing could be cleared:
+  // same field numbers and wire format, so an old client's '' -- never
+  // serialized in proto3 -- still means "unchanged".
+  optional string first_name = 2;
+  optional string last_name = 3;
+  optional string bio = 4;
+  optional string birth_date = 5; // YYYY-MM-DD
+  optional string city = 6;
+  optional string country_code = 7; // ISO 3166-1 alpha-2, upper case
+  optional string phone_number = 8;
+  string first_name_visibility = 9; // public | friends | private; '' = unchanged
+  string last_name_visibility = 10;
+  string bio_visibility = 11;
+  string birth_date_visibility = 12;
+  string location_visibility = 13; // covers both city and country_code
+  string phone_visibility = 14;
+  string preferences_visibility = 15;
+  string user_public_id = 16; // the caller; must match the session.
+}
+
+// The updated profile, as the owner sees it (nothing hidden).
+message UpdateUserProfileResponse {
+  UserDTO user = 1;
+}
+
+// A new avatar image for the caller.
+message UploadAvatarRequest {
+  int64 user_id = 1; // Filled by the server; clients leave it unset.
+  bytes image_data = 2; // The original image, at most 5 MiB (base64 in JSON).
+  string content_type = 3; // image/png | image/jpeg | image/webp
+  string user_public_id = 4; // the caller; must match the session.
+}
+
+// The profile, with avatar_storage_key pointing at the new thumbnail.
+message UploadAvatarResponse {
+  UserDTO user = 1;
+}
+
+// Removes the caller's avatar.
+message DeleteAvatarRequest {
+  int64 user_id = 1; // Filled by the server; clients leave it unset.
+  string user_public_id = 2; // the caller; must match the session.
+}
+
+// The profile, with an empty avatar_storage_key.
+message DeleteAvatarResponse {
+  UserDTO user = 1;
+}
+
+// The caller's complete new set of music preferences.
+message SetMusicPreferencesRequest {
+  int64 user_id = 1; // Filled by the server; clients leave it unset.
+  // The full set; empty clears it. Each weight must be 1 to 5.
+  repeated MusicPreferenceDTO preferences = 2;
+  string user_public_id = 3; // the caller; must match the session.
+}
+
+// The stored preferences, by weight descending then genre name.
+message SetMusicPreferencesResponse {
+  repeated MusicPreferenceDTO preferences = 1;
+}
+
+// Lists the caller's friends.
+message GetFriendsRequest {
+  int64 user_id = 1; // Filled by the server; clients leave it unset.
+  string user_public_id = 2; // the caller; must match the session.
+}
+
+// The caller's friends, sorted by display name.
+message GetFriendsResponse {
+  repeated FriendDTO friends = 1;
+}
+
+// A friend request from the caller to another user.
+message SendFriendRequestRequest {
+  int64 requester_id = 1; // Filled by the server; clients leave it unset.
+  int64 addressee_id = 2; // Filled by the server; clients leave it unset.
+  string message = 3; // Optional note attached to the request.
+  string requester_public_id = 4; // the caller; must match the session.
+  string addressee_public_id = 5; // The user to send the request to.
+}
+
+// The new request, with status "pending".
+message SendFriendRequestResponse {
+  FriendRequestDTO request = 1;
+}
+
+// Lists the caller's pending friend requests in one direction.
+message ListFriendRequestsRequest {
+  int64 user_id = 1; // Filled by the server; clients leave it unset.
+  string direction = 2; // incoming | outgoing; empty = incoming
+  string user_public_id = 3; // the caller; must match the session.
+}
+
+// Pending requests only, newest first.
+message ListFriendRequestsResponse {
+  repeated FriendRequestDTO requests = 1;
+}
+
+// Accepts a friend request addressed to the caller.
+message AcceptFriendRequestRequest {
+  int64 request_id = 1; // The request's internal id (not a public UUID).
+  int64 addressee_id = 2; // must be the request's addressee
+  string addressee_public_id = 3; // the caller; must match the session.
+}
+
+// The new friend (the original requester).
+message AcceptFriendRequestResponse {
+  FriendDTO friend = 1;
+}
+
+// Declines a friend request addressed to the caller.
+message DeclineFriendRequestRequest {
+  int64 request_id = 1; // The request's internal id (not a public UUID).
+  int64 addressee_id = 2; // Filled by the server; clients leave it unset.
+  string addressee_public_id = 3; // the caller; must match the session.
+}
+
+// Empty on success.
+message DeclineFriendRequestResponse {}
+
+// Blocks a user on behalf of the caller.
+message BlockUserRequest {
+  int64 blocker_id = 1; // Filled by the server; clients leave it unset.
+  int64 blocked_id = 2; // Filled by the server; clients leave it unset.
+  string blocker_public_id = 3; // the caller; must match the session.
+  string blocked_public_id = 4; // The user to block; not the caller.
+}
+
+// Empty on success.
+message BlockUserResponse {}
+
+// Removes a block the caller placed.
+message UnblockUserRequest {
+  int64 blocker_id = 1; // Filled by the server; clients leave it unset.
+  int64 blocked_id = 2; // Filled by the server; clients leave it unset.
+  string blocker_public_id = 3; // the caller; must match the session.
+  string blocked_public_id = 4; // The user to unblock.
+}
+
+// Empty on success.
+message UnblockUserResponse {}
+
+// Lists the users the caller has blocked.
+message ListBlockedUsersRequest {
+  int64 blocker_id = 1; // Filled by the server; clients leave it unset.
+  string blocker_public_id = 2; // the caller; must match the session.
+}
+
+// Blocked users, most recent block first.
+message ListBlockedUsersResponse {
+  repeated BlockedUserDTO blocked_users = 1;
+}
+
+// Asks how the caller relates to one user.
+message GetUserRelationshipRequest {
+  int64 viewer_id = 1; // Filled by the server; clients leave it unset.
+  int64 target_id = 2; // Filled by the server; clients leave it unset.
+  string viewer_public_id = 3; // the caller; must match the session.
+  string target_public_id = 4; // The other user.
+}
+
+// The caller's relationship with the target.
+message GetUserRelationshipResponse {
+  string status = 1; // self | none | friends | request_sent | request_received
+  int64 incoming_request_id = 2; // set for request_received: the id Accept/Decline take
+  bool blocked = 3; // the caller blocked the target
+  // Only when `blocked`: GetUser is refused then, and the caller already sees
+  // this name in ListBlockedUsers.
+  string display_name = 4;
+}
+
+// Ends the caller's friendship with one user.
+message RemoveFriendRequest {
+  int64 user_id = 1; // Filled by the server; clients leave it unset.
+  int64 friend_id = 2; // Filled by the server; clients leave it unset.
+  string user_public_id = 3; // the caller; must match the session.
+  string friend_public_id = 4; // The friend to remove.
+}
+
+// Empty on success.
+message RemoveFriendResponse {}
+
+// A display-name search run for the caller.
+message SearchUsersRequest {
+  int64 viewer_id = 1; // Filled by the server; clients leave it unset.
+  string viewer_public_id = 2; // the caller; must match the session.
+  string query = 3; // Substring of the display name, case-insensitive; blank returns nobody.
+  int32 limit = 4; // 0 = 20; at most 50
+}
+
+// Matching users, names starting with the query first.
+message SearchUsersResponse {
+  repeated UserSummaryDTO users = 1;
+}

@@ -1,0 +1,21 @@
+syntax = "proto3";
+
+package music_room.v1;
+
+option go_package = "music_room/v1;pbv1";
+
+// A track from the Deezer catalogue.
+message SongDTO {
+  // Internal id in the local song cache; -1 for MusicProviderService results,
+  // which are not cached. Other RPCs take deezer_song_id, never this.
+  int64 id = 1;
+  int64 deezer_song_id = 2; // the id the rest of the API names a song by.
+  string title = 3;
+  int64 duration_seconds = 4;
+  string artist_name = 5;
+  int64 deezer_artist_id = 6;
+  string album_title = 7;
+  int64 deezer_album_id = 8;
+  string cover_url = 9; // album cover hosted by Deezer.
+  string preview_url = 10; // 30-second audio preview hosted by Deezer.
+}

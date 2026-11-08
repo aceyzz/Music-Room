@@ -1,0 +1,118 @@
+# The load-test stack (V.7): docker-compose.yaml, run as a SEPARATE compose project
+# (music-room-lt, see the Makefile's loadtest section) with a declared compute budget.
+#
+#   docker compose -p music-room-lt -f docker-compose.yaml -f loadtest/compose.yaml ...
+#
+# A separate project rather than the dev stack because a measurement needs a fresh,
+# known database (`seed -reset -loadtest N` wipes it) and must never wipe the one
+# people work in. So: its own volumes, its own network, no host ports except the
+# k6 dashboard, and no fixed container names (they would collide with the dev
+# stack's).
+#
+# The budget is the point of V.7: "the maximum number of users must be coherent
+# with the infrastructure". Every server-side container gets a CPU and memory cap
+# (LT_* variables, set per profile by the Makefile), and all of them share one CPU
+# set while k6 gets the others, so on a single machine the load generator does not
+# eat the server's cores. The "server" is the sum of the caps: that is the machine
+# the measured number belongs to (docs/load-testing.md).
+
+# container_name and ports are reset per service, not in this anchor: a `!reset`
+# tag does not survive a YAML merge key, and the dev stack's names would collide.
+x-server: &server
+  cpuset: ${LT_SERVER_CPUSET:-0-3}
+
+services:
+  postgres:
+    <<: *server
+    container_name: !reset null
+    ports: !reset []
+    cpus: ${LT_PG_CPUS:-1}
+    mem_limit: ${LT_PG_MEM:-1g}
+
+  # Redis is disabled in the root docker-compose.yaml; uncomment with it.
+  # redis:
+  #   <<: *server
+  #   container_name: !reset null
+  #   ports: !reset []
+  #   cpus: 0.25
+  #   mem_limit: 128m
+
+  openfga-postgres:
+    <<: *server
+    container_name: !reset null
+    ports: !reset []
+    cpus: ${LT_FGA_PG_CPUS:-0.5}
+    mem_limit: ${LT_FGA_PG_MEM:-512m}
+
+  openfga-migrate:
+    container_name: !reset null
+
+  openfga:
+    <<: *server
+    container_name: !reset null
+    ports: !reset []
+    cpus: ${LT_FGA_CPUS:-0.5}
+    mem_limit: ${LT_FGA_MEM:-512m}
+
+  openfga-init:
+    container_name: !reset null
+
+  image-service:
+    <<: *server
+    container_name: !reset null
+    ports: !reset []
+    cpus: 0.25
+    mem_limit: 128m
+
+  backend:
+    <<: *server
+    container_name: !reset null
+    ports: !reset []
+    cpus: ${LT_BACKEND_CPUS:-1}
+    mem_limit: ${LT_BACKEND_MEM:-1g}
+    environment:
+      # LT_DB_PARAMS appends pgx pool settings, e.g. "&pool_max_conns=20". Unset,
+      # pgxpool keeps its default, max(4, runtime.NumCPU()) -- and NumCPU follows
+      # the cpuset above, not the `cpus` quota, so the pool is sized for more CPU
+      # than the backend is allowed. A first suspect when the knee comes early
+      # (docs/load-testing.md).
+      APP_DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD manquant dans .env}@postgres:5432/music_room?sslmode=disable${LT_DB_PARAMS:-}
+      # k6 sends every request from one address: the per-IP rate limit would
+      # measure itself, not the backend.
+      APP_RATE_LIMIT_RPS: "0"
+
+  # The load generator, outside the budget: `make loadtest` runs it with
+  # `docker compose run`. Results land in loadtest/results/ on the host.
+  k6:
+    image: grafana/k6:2.3.0
+    profiles: ["loadtest"]
+    cpuset: ${LT_K6_CPUSET:-4-7}
+    user: "${LT_UID:-1000}:${LT_GID:-1000}"
+    working_dir: /loadtest
+    volumes:
+      - ./loadtest:/loadtest
+    environment:
+      BASE_URL: http://backend:8081
+      # Live dashboard while the run lasts (http://localhost:5665), exported to
+      # report.html at the end.
+      K6_WEB_DASHBOARD: "true"
+      K6_WEB_DASHBOARD_HOST: 0.0.0.0
+      K6_WEB_DASHBOARD_PORT: "5665"
+    ports:
+      - "5665:5665"
+    depends_on:
+      backend:
+        condition: service_started
+
+  # loadtest/verify: the invariants after a run, straight from the database.
+  verify:
+    build:
+      context: ./tests
+    profiles: ["loadtest"]
+    working_dir: /work
+    volumes:
+      - ./loadtest:/work/loadtest
+    environment:
+      DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD manquant dans .env}@postgres:5432/music_room
+    entrypoint: ["python", "-u", "loadtest/verify/verify.py"]
+

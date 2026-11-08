@@ -1,0 +1,54 @@
+version: v2
+plugins:
+  # ---------------------------------------------------------------------------
+  # 1. Go Backend Plugins
+  # ---------------------------------------------------------------------------
+  # Generate Go struct definitions
+  - local: protoc-gen-go
+    out: backend/gen/go
+
+  # Generate Go gRPC server stubs
+  - local: protoc-gen-go-grpc
+    out: backend/gen/go
+
+  # Generate gRPC-Gateway reverse proxy stubs
+  - local: protoc-gen-grpc-gateway
+    out: backend/gen/go
+    opt:
+      - generate_unbound_methods=true
+
+  # ---------------------------------------------------------------------------
+  # 2. Dart / Flutter Frontend Plugins
+  # ---------------------------------------------------------------------------
+  # Generate Dart Protobuf and gRPC stubs
+  - local: protoc-gen-dart
+    out: frontend/app/lib/gen
+    opt:
+      - grpc
+
+  # ---------------------------------------------------------------------------
+  # 3. Documentation / OpenAPI Spec
+  # ---------------------------------------------------------------------------
+  # Generate OpenAPI v2 (Swagger) spec file
+  - local: protoc-gen-openapiv2
+    out: frontend/app/lib/gen
+    strategy: all
+    opt:
+      - allow_merge=true
+      - merge_file_name=api_spec
+      - json_names_for_fields=false
+
+  # Same spec, a second copy for the backend to serve itself (Swagger UI, §7
+  # of docs/todo.md) -- NOT under backend/gen/ (wiped wholesale by
+  # buf-clean/rm -rf) but under backend/internal/apidocs, alongside the
+  # hand-written apidocs.go that go:embeds it: go:embed only reaches files in
+  # or below its own package directory, and backend's Docker build context is
+  # ./backend alone (docker-compose.yaml), so anything under frontend/ is
+  # unreachable at build time regardless.
+  - local: protoc-gen-openapiv2
+    out: backend/internal/apidocs
+    strategy: all
+    opt:
+      - allow_merge=true
+      - merge_file_name=api_spec
+      - json_names_for_fields=false

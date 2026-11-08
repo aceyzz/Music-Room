@@ -1,0 +1,274 @@
+syntax = "proto3";
+
+package music_room.v1;
+
+import "google/api/annotations.proto";
+import "protoc-gen-openapiv2/options/annotations.proto";
+
+option go_package = "music_room/v1;pbv1";
+
+// Account lifecycle: sign-up, sign-in (password or OAuth), sessions, email
+// verification and password reset (V.1). No RPC here names an object by
+// `*_public_id`: everything acts on the session's own account.
+service AuthService {
+  // Creates an email/password account.
+  //
+  // Public. `email` and `display_name` must both be unique. Sends the first
+  // email verification code right away; a failed send is logged and does not
+  // undo the account.
+  rpc Register(RegisterRequest) returns (RegisterResponse) {
+    option (google.api.http) = {
+      post: "/v1/auth/register"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      security: {}
+    };
+  }
+  // Signs in with email and password and opens a session.
+  //
+  // Public. Returns the session token once, in clear; send it afterwards as
+  // `Authorization: Bearer <token>`. Unknown email, wrong password and an
+  // OAuth-only account all fail with the same Unauthenticated error.
+  rpc Login(LoginRequest) returns (LoginResponse) {
+    option (google.api.http) = {
+      post: "/v1/auth/login"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      security: {}
+    };
+  }
+  // Revokes the session whose token is presented.
+  //
+  // Public: the token is read from the `Authorization` header, not the body, so
+  // logging out with an unknown or already revoked token still succeeds. The
+  // spec keeps the bearer requirement on it so Swagger UI sends the header.
+  rpc Logout(LogoutRequest) returns (LogoutResponse) {
+    option (google.api.http) = {
+      post: "/v1/auth/logout"
+      body: "*"
+    };
+  }
+  // Resends an email verification code to the session's account.
+  //
+  // Requires a session. The address comes from the account, never from the
+  // request. Invalidates the previous code; fails with FailedPrecondition if the
+  // account is already verified.
+  rpc RequestEmailVerification(RequestEmailVerificationRequest) returns (RequestEmailVerificationResponse) {
+    option (google.api.http) = {
+      post: "/v1/auth/email/request"
+      body: "*"
+    };
+  }
+  // Consumes an email verification code and marks the account verified.
+  //
+  // Requires a session: a code only verifies the account it was sent to.
+  // Unknown, used, expired or foreign codes all fail with the same
+  // InvalidArgument.
+  rpc VerifyEmail(VerifyEmailRequest) returns (VerifyEmailResponse) {
+    option (google.api.http) = {
+      post: "/v1/auth/email/verify"
+      body: "*"
+    };
+  }
+  // Signs in or signs up with an OAuth provider (Google, Facebook, 42).
+  //
+  // Public. Resolves the account by already-linked identity, then by matching
+  // email (auto-linking it), else creates a new account. Returns the same
+  // fields as Login.
+  rpc OAuthLogin(OAuthLoginRequest) returns (OAuthLoginResponse) {
+    option (google.api.http) = {
+      post: "/v1/auth/oauth/login"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      security: {}
+    };
+  }
+  // Emails a one-time password reset code.
+  //
+  // Public. Always returns an empty success, whether or not the email belongs
+  // to an account, so the call cannot be used to enumerate accounts.
+  rpc RequestPasswordReset(RequestPasswordResetRequest) returns (RequestPasswordResetResponse) {
+    option (google.api.http) = {
+      post: "/v1/auth/password/request"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      security: {}
+    };
+  }
+  // Consumes a password reset code and sets a new password.
+  //
+  // Public. Revokes every active session of the account in the same
+  // transaction.
+  rpc ResetPassword(ResetPasswordRequest) returns (ResetPasswordResponse) {
+    option (google.api.http) = {
+      post: "/v1/auth/password/reset"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      security: {}
+    };
+  }
+  // Links an OAuth provider to the session's account.
+  //
+  // Requires a session. Fails with AlreadyExists if the provider identity is
+  // linked to another account, or this provider is already linked here.
+  rpc LinkOAuthAccount(LinkOAuthAccountRequest) returns (LinkOAuthAccountResponse) {
+    option (google.api.http) = {
+      post: "/v1/auth/oauth/link"
+      body: "*"
+    };
+  }
+  // Unlinks an OAuth provider from the session's account.
+  //
+  // Requires a session. Refused with FailedPrecondition when it would remove the
+  // account's last way to sign in.
+  rpc UnlinkOAuthAccount(UnlinkOAuthAccountRequest) returns (UnlinkOAuthAccountResponse) {
+    option (google.api.http) = {
+      post: "/v1/auth/oauth/unlink"
+      body: "*"
+    };
+  }
+  // Lists the OAuth providers linked to the session's account.
+  //
+  // Requires a session. Its own RPC rather than a field on UserDTO: UserDTO
+  // is a profile filtered per viewer (UserService.GetUser), and which
+  // identities sign into an account is nobody else's business at any
+  // visibility. has_password is here so the client knows, before trying,
+  // whether UnlinkOAuthAccount would refuse to remove the last provider.
+  rpc ListOAuthAccounts(ListOAuthAccountsRequest) returns (ListOAuthAccountsResponse) {
+    option (google.api.http) = {get: "/v1/auth/oauth/accounts"};
+  }
+}
+
+// Sign-up form for a new email/password account.
+message RegisterRequest {
+  string email = 1; // case-insensitive, unique.
+  string password = 2; // at least APP_MIN_PASSWORD_LENGTH (default 8) characters.
+  string display_name = 3; // unique, non-empty.
+}
+
+// The account just created.
+message RegisterResponse {
+  string user_public_id = 1; // the account's public UUID.
+  string display_name = 2;
+  string email = 3;
+}
+
+// Email/password credentials.
+message LoginRequest {
+  string email = 1;
+  string password = 2;
+}
+
+// A new session and the signed-in account.
+message LoginResponse {
+  // Opaque token, returned only once. Send as `Authorization: Bearer <token>`.
+  string session_token = 1;
+  // Absolute session expiry, Unix seconds. An idle session also expires earlier.
+  int64 expires_at_unix = 2;
+
+  string user_public_id = 3;
+  string display_name = 4;
+  string email = 5;
+
+  // False until VerifyEmail succeeds. The client uses it to require
+  // verification before the rest of the app; the server does not block
+  // unverified accounts.
+  bool email_verified = 6;
+}
+
+// Empty: the session token comes from the Authorization header.
+message LogoutRequest {}
+
+// Empty.
+message LogoutResponse {}
+
+// Resends a verification code for the session's account. Register already
+// sends the first one. Requires authentication: the address comes from the
+// account, never from the request.
+message RequestEmailVerificationRequest {}
+
+// Empty.
+message RequestEmailVerificationResponse {}
+
+// Requires authentication: a code only verifies the account it was sent to.
+message VerifyEmailRequest {
+  string code = 1; // the 6-digit code from the email.
+}
+
+// Empty.
+message VerifyEmailResponse {}
+
+// An OAuth authorization code to exchange with the provider.
+message OAuthLoginRequest {
+  string provider = 1; // google | facebook | intra42; must be configured on the server.
+  string code = 2; // authorization code from the provider's browser flow.
+  string redirect_uri = 3; // must match the URI registered with the provider exactly.
+}
+
+// A new session and the signed-in account; same fields as LoginResponse.
+message OAuthLoginResponse {
+  string session_token = 1; // see LoginResponse.session_token.
+  int64 expires_at_unix = 2; // see LoginResponse.expires_at_unix.
+
+  string user_public_id = 3;
+  string display_name = 4;
+  string email = 5;
+  bool email_verified = 6; // see LoginResponse.email_verified.
+}
+
+// The account email to send a reset code to.
+message RequestPasswordResetRequest {
+  string email = 1;
+}
+
+// Empty, always.
+message RequestPasswordResetResponse {}
+
+// A reset code and the new password.
+message ResetPasswordRequest {
+  string email = 1;
+  string code = 2; // the code from RequestPasswordReset.
+  string new_password = 3; // same length rule as at sign-up.
+}
+
+// Empty.
+message ResetPasswordResponse {}
+
+// An OAuth authorization code for the provider to link.
+message LinkOAuthAccountRequest {
+  string provider = 1; // google | facebook | intra42; must be configured on the server.
+  string code = 2; // authorization code from the provider's browser flow.
+  string redirect_uri = 3; // must match the URI registered with the provider exactly.
+}
+
+// Empty.
+message LinkOAuthAccountResponse {}
+
+// The provider to unlink.
+message UnlinkOAuthAccountRequest {
+  string provider = 1; // google | facebook | intra42.
+}
+
+// Empty.
+message UnlinkOAuthAccountResponse {}
+
+// Empty: the account is the session's.
+message ListOAuthAccountsRequest {}
+
+// The providers linked to the caller's account, oldest link first.
+message ListOAuthAccountsResponse {
+  repeated LinkedOAuthAccountDTO accounts = 1;
+  bool has_password = 2; // false for an account created by OAuthLogin that never set one.
+}
+
+// One provider identity linked to the caller's account.
+message LinkedOAuthAccountDTO {
+  string provider = 1; // google | facebook | intra42.
+  string provider_email = 2; // the address the provider reported; may be empty.
+  int64 linked_at_unix = 3; // unix seconds.
+}

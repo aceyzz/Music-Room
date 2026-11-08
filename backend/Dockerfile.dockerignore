@@ -1,0 +1,18 @@
+# Ignore file for backend/Dockerfile, whose context is the repository root.
+# Everything is out except what the Dockerfile copies; frontend/ alone is
+# gigabytes of Flutter build output.
+*
+!proto
+!buf.yaml
+!buf.lock
+!buf.gen.backend.yaml
+!backend
+
+# Generated: the image makes its own, from the protos and queries above.
+backend/gen
+backend/db/sqlc
+backend/internal/apidocs/api_spec.swagger.json
+
+backend/bin
+backend/data
+**/*.log

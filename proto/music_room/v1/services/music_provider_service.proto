@@ -1,0 +1,48 @@
+syntax = "proto3";
+
+package music_room.v1;
+
+import "google/api/annotations.proto";
+// import "music_room/v1/dto/common.proto";
+import "music_room/v1/dto/song.proto";
+
+option go_package = "music_room/v1;pbv1";
+
+// Read-only access to the Deezer catalogue: song lookup and search. The
+// catalogue has no owner or visibility, so a valid session is the whole rule.
+service MusicProviderService {
+  // Gets one song from Deezer by its Deezer id.
+  //
+  // Any signed-in user. Queries the Deezer API live; nothing is cached, so the
+  // returned song's `id` is -1.
+  rpc GetSong(GetSongRequest) returns (GetSongResponse) {
+    option (google.api.http) = {get: "/v1/songs/{id}"};
+  }
+  // Searches the Deezer catalogue.
+  //
+  // Any signed-in user. Nothing is cached: a result is persisted only when it
+  // is added to a playlist or suggested to an event, so every `id` is -1.
+  rpc SearchSongs(SearchSongsRequest) returns (SearchSongsResponse) {
+    option (google.api.http) = {get: "/v1/songs/search"};
+  }
+}
+
+// A song to look up on Deezer.
+message GetSongRequest {
+  string id = 1; // the song's Deezer id, not our internal id.
+}
+
+// The song as Deezer describes it.
+message GetSongResponse {
+  SongDTO song = 1;
+}
+
+// A free-text Deezer search.
+message SearchSongsRequest {
+  string query = 1; // empty returns no songs without calling Deezer.
+}
+
+// The matching songs.
+message SearchSongsResponse {
+  repeated SongDTO songs = 1;
+}

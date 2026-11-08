@@ -1,0 +1,324 @@
+<!doctype html>
+<html lang="en" style="color-scheme: dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OpenFGA Permission Service · Music Room</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+  tailwind.config = {
+    theme: { extend: { colors: {
+      wt: {
+        bg: '#000000', surface: '#0a0a0a', raised: '#141414',
+        border: '#2a2a2a', fg: '#ffffff', muted: '#a0a0a0',
+        accent: '#a855f7', file: '#c084fc', red: '#ef4444',
+      },
+    }}},
+  };
+</script>
+<script crossorigin src="https://unpkg.com/react@18.3.1/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js"></script>
+<style>
+  html, body { background: #000; color: #fff; margin: 0; overflow: hidden; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Inter, sans-serif; }
+  .mermaid-wrap svg { max-width: none !important; height: auto !important; }
+  .mermaid-wrap .node { cursor: pointer; }
+  .mermaid-wrap .node:hover rect,
+  .mermaid-wrap .node:hover polygon,
+  .mermaid-wrap .node:hover circle,
+  .mermaid-wrap .node:hover .label-container { filter: brightness(1.3); transition: filter .15s; }
+  .mermaid-wrap .wt-entity { cursor: pointer; }
+  .mermaid-wrap .wt-entity:hover { filter: brightness(1.3); transition: filter .15s; }
+  .dt-body p { color:#a0a0a0; font-size:.88rem; line-height:1.65; margin-bottom:10px; }
+  .dt-body .shiki, .dt-body pre.code-fallback {
+    background: #000000; border: 1px solid #2a2a2a; border-radius: 8px;
+    padding: 14px 16px; overflow-x: auto; margin: 8px 0 14px;
+  }
+  .dt-body .shiki { background: #000000 !important; }
+  .dt-body .shiki code, .dt-body pre.code-fallback code {
+    font-family: 'SF Mono','Fira Code',monospace; font-size: .78rem; line-height: 1.55;
+    background: none; padding: 0; border-radius: 0;
+  }
+  .dt-body .shiki code { color: inherit; }
+  .dt-body pre.code-fallback code { color: #e0e0e0; }
+  kbd { font-family: inherit; }
+</style>
+</head>
+<body class="bg-wt-bg">
+<div id="root"></div>
+<script type="module">
+let createHighlighter = null;
+try {
+  ({ createHighlighter } = await import('https://cdn.jsdelivr.net/npm/shiki@3.22.0/+esm'));
+} catch (e) { console.warn('Shiki unavailable:', e); }
+
+const { useState, useEffect, useRef, useCallback } = React;
+const h = React.createElement;
+
+const DATA = {"title": "OpenFGA Permission Service", "subtitle": "The permission graph: how it is deployed, asked and kept in sync with Postgres", "kind": "flow", "summary": "OpenFGA answers \"may user X do Y on object Z?\" from a graph of tuples, using the rules in authz/model.fga.\nPostgres stays the source of truth: each write that changes access also records its tuple changes in an outbox table in the same transaction, and they are pushed to OpenFGA right after commit or later by a retry worker.\nSome rules cannot live in the graph (venue radius, event status, delegated playback licences), so they stay as Go or SQL checks.", "diagram": "\ngraph LR\n    subgraph setup[\"Deployment\"]\n        fgaServer[\"OpenFGA Server\"]\n        modelImport[\"Model Import\"]\n        bootPing[\"Boot Ping and Model Pin\"]\n    end\n    subgraph rules[\"Rules\"]\n        model[(\"Authorization Model\")]\n        voteWindow[\"Vote Window Condition\"]\n        notInGraph[\"Outside the Graph\"]\n    end\n    subgraph read[\"Asking\"]\n        checkPath[\"Check per Request\"]\n        listObjects[\"ListObjects for Lists\"]\n    end\n    subgraph write[\"Keeping in Sync\"]\n        tupleBuilders[\"Tuple Builders\"]\n        outboxInTx[\"Transactional Outbox\"]\n        outboxTable[(\"Outbox Table\")]\n        outboxWorker[\"Retry Worker\"]\n    end\n    model -->|\"loaded by\"| modelImport\n    voteWindow -->|\"part of\"| model\n    modelImport -->|\"imports into\"| fgaServer\n    bootPing -->|\"verifies\"| fgaServer\n    checkPath -->|\"asks\"| fgaServer\n    listObjects -->|\"asks\"| fgaServer\n    notInGraph -.->|\"completes\"| checkPath\n    tupleBuilders -->|\"feed changes to\"| outboxInTx\n    outboxInTx -->|\"inserts in same transaction\"| outboxTable\n    outboxInTx ==>|\"applies after commit\"| fgaServer\n    outboxWorker -->|\"claims leftovers from\"| outboxTable\n    outboxWorker ==>|\"retries Apply on\"| fgaServer\n    classDef component fill:#a855f7,stroke:#c084fc,color:#fff\n    classDef composable fill:#7c3aed,stroke:#a78bfa,color:#fff\n    classDef utility fill:#6d28d9,stroke:#8b5cf6,color:#fff\n    classDef external fill:#525252,stroke:#737373,color:#fff\n    classDef event fill:#d8b4fe,stroke:#e9d5ff,color:#000\n    classDef data fill:#9333ea,stroke:#a855f7,color:#fff\n    class fgaServer external\n    click fgaServer nodeClickHandler \"View details\"\n    class modelImport utility\n    click modelImport nodeClickHandler \"View details\"\n    class bootPing utility\n    click bootPing nodeClickHandler \"View details\"\n    class model data\n    click model nodeClickHandler \"View details\"\n    class voteWindow data\n    click voteWindow nodeClickHandler \"View details\"\n    class notInGraph utility\n    click notInGraph nodeClickHandler \"View details\"\n    class checkPath composable\n    click checkPath nodeClickHandler \"View details\"\n    class listObjects composable\n    click listObjects nodeClickHandler \"View details\"\n    class tupleBuilders utility\n    click tupleBuilders nodeClickHandler \"View details\"\n    class outboxInTx composable\n    click outboxInTx nodeClickHandler \"View details\"\n    class outboxTable data\n    click outboxTable nodeClickHandler \"View details\"\n    class outboxWorker composable\n    click outboxWorker nodeClickHandler \"View details\"\n", "nodes": {"fgaServer": {"title": "OpenFGA Server", "type": "external", "description": "openfga/openfga v1.18.3 with its own Postgres (openfga-postgres, migrated by openfga-migrate), so nobody is tempted to join across the two databases. The backend uses its HTTP API on :8082; its check cache makes answers eventually consistent, about 1-2 s after a tuple lands.", "files": ["docker-compose.yaml"], "code": "      OPENFGA_CACHE_CONTROLLER_ENABLED: ${FGA_CHECK_CACHE:-true}\n      OPENFGA_CHECK_QUERY_CACHE_TTL: ${FGA_CHECK_CACHE_TTL:-10s}", "lang": "yaml"}, "modelImport": {"title": "Model Import (openfga-init)", "type": "utility", "description": "A one-shot container imports authz/model.fga into a store with a fixed ULID, so backend config can be static. Each run appends a new model version; make fga-model re-runs it.", "files": ["authz/store.yaml", "docker-compose.yaml"], "code": "name: music-room\nmodel_file: ./model.fga", "lang": "yaml"}, "bootPing": {"title": "Boot Ping and Model Pin", "type": "utility", "description": "At startup the backend reads the latest model and pins its id, failing fast if the store is missing or empty. That way a misconfigured store is found at boot, not at the first write.", "files": ["backend/internal/authz/client.go", "backend/cmd/main.go"], "code": "\tresponse, err := c.fga.ReadLatestAuthorizationModel(ctx).Execute()\n\tif err != nil {\n\t\treturn \"\", fmt.Errorf(\"openfga unreachable or store missing: %w\", err)\n\t}", "lang": "go"}, "model": {"title": "Authorization Model", "type": "data", "description": "Six types: user, playlist, event, queue_entry, device and image. Roles and public flags are stored tuples; can_view, can_edit_songs, can_vote and the rest are computed from them.", "files": ["authz/model.fga", "docs/permissions.md"], "code": "    define can_edit_songs: owner or admin or editor or (can_view and open_edit)\n    define can_vote: can_vote_everyone or can_vote_invited or can_vote_window", "lang": "text"}, "voteWindow": {"title": "Vote Window Condition (CEL)", "type": "data", "description": "The time half of the location_time vote licence, as a CEL condition on the window_vote tuple. The backend sends current_time truncated to the minute, and only for permissions that need it, so cache keys stay stable.", "files": ["authz/model.fga", "backend/internal/authz/check.go"], "code": "condition within_vote_window(current_time: timestamp, window_start_minutes: int, window_end_minutes: int, venue_timezone: string) {", "lang": "text"}, "notInGraph": {"title": "Outside the Graph", "type": "utility", "description": "CEL has no geometry and the graph has no resource state, so the venue radius, ended events and delegated playback licences are checked in Go or SQL after Check passes. Licences were removed from the graph on purpose.", "files": ["authz/model.fga", "backend/internal/event/access.go"], "code": "    # A control licence is not here: the device_control_licenses row is the permission", "lang": "text"}, "checkPath": {"title": "Check per Request", "type": "composable", "description": "The interceptor asks Check for each requirement of the RPC's policy, with a 2 s timeout; an error counts as a denial. Objects are named by public UUID, so a Check needs no database round trip.", "files": ["backend/internal/interceptor/interceptor.go", "backend/internal/authz/tuple.go"], "code": "\t\tif authz.NeedsRequestTime(requirement.Type, requirement.Permission) {\n\t\t\tcheck.Context = map[string]any{\"current_time\": authz.RequestTime(i.now())}\n\t\t}\n\t\tallowed, err := i.check(ctx, check)", "lang": "go"}, "listObjects": {"title": "ListObjects for Lists", "type": "composable", "description": "List pages (all playlists, library, events) ask OpenFGA which objects the viewer can_view, instead of a Go WHERE clause. A playlist the rules don't cover can therefore never leak into a list.", "files": ["backend/internal/playlist/service.go", "backend/internal/event/queue.go"], "code": "\tpublicIDs, err := s.perms.ListObjects(ctx, authz.UserRef(req.GetViewerPublicId()), authz.PermPlaylistView, authz.TypePlaylist)", "lang": "go"}, "tupleBuilders": {"title": "Tuple Builders", "type": "utility", "description": "Small functions such as NewUser, NewPlaylist, NewEvent, NewDevice and Block turn one row change into tuple writes and deletes. Block is the one exception to copying rows: one block row becomes two mirrored tuples.", "files": ["backend/internal/authz/tuple.go", "backend/internal/authz/event.go", "backend/internal/authz/social.go"], "code": "func Object(t ObjectType, publicID string) string {\n\treturn string(t) + \":\" + publicID\n}", "lang": "go"}, "outboxInTx": {"title": "Transactional Outbox (InTx)", "type": "composable", "description": "Repositories call InTx with a function that does the domain write and returns the tuple changes; both commit together. Delivery is tried right after commit, and a failure there is only a delay, not a lost write.", "files": ["backend/internal/authz/outbox/tx.go", "backend/internal/authz/outbox/outbox.go"], "code": "func InTx[T any](\n\tctx context.Context,\n\toutbox *Outbox,\n\tdb DB,\n\tfn func(ctx context.Context, tx pgx.Tx) (T, []authz.Change, error),", "lang": "go"}, "outboxTable": {"title": "Outbox Table", "type": "data", "description": "openfga_tuple_outbox holds pending changes keyed by object. A row is only claimed when no older row for the same object is waiting, so changes to one object apply in order.", "files": ["backend/db/query/openfga_outbox.sql", "backend/db/schema/00015_openfga_outbox.sql"], "code": "-- name: ClaimTupleChanges :many\nUPDATE openfga_tuple_outbox\nSET next_attempt_at = NOW() + make_interval(secs => sqlc.arg('lease_seconds')::int)", "lang": "sql"}, "outboxWorker": {"title": "Retry Worker", "type": "composable", "description": "A ticker loop (1 s in compose, 15 s by default) that leases due rows, applies them and deletes them on success, backing off from 30 s up to 10 min. Apply is idempotent, so a retry never does harm.", "files": ["backend/internal/authz/outbox/worker.go"], "code": "\tticker := time.NewTicker(w.config.Interval)", "lang": "go"}}, "legend": [{"label": "External system", "color": "#525252"}, {"label": "Helper", "color": "#6d28d9"}, {"label": "Data / State", "color": "#9333ea"}, {"label": "Logic / Service", "color": "#7c3aed"}], "pages": [{"slug": "overview", "title": "Music Room: System Overview"}, {"slug": "backend", "title": "Backend Architecture"}, {"slug": "request-pipeline", "title": "Request Pipeline"}, {"slug": "openfga", "title": "OpenFGA Permission Service"}, {"slug": "auth", "title": "Auth and Sessions"}, {"slug": "realtime", "title": "Realtime Updates"}, {"slug": "frontend", "title": "Frontend Architecture"}, {"slug": "track-vote", "title": "Track Vote Events"}, {"slug": "playlist-editor", "title": "Playlist Editor"}, {"slug": "control-delegation", "title": "Control Delegation"}, {"slug": "data-model", "title": "Data Model"}], "slug": "openfga"};
+const { title: TITLE, subtitle: SUBTITLE, kind: KIND, summary: SUMMARY,
+        diagram: DIAGRAM, nodes: NODES, legend: LEGEND, pages: PAGES, slug: SLUG } = DATA;
+
+// Pre-highlight every snippet once; the panel falls back to plain <pre> if Shiki fails.
+const langs = [...new Set(Object.values(NODES).map(n => n.lang).filter(l => l && l !== 'text'))];
+let highlighter = null;
+if (createHighlighter) {
+  try { highlighter = await createHighlighter({ themes: ['vitesse-dark'], langs }); }
+  catch (e) { console.warn('Shiki failed:', e); }
+}
+const HIGHLIGHTED = {};
+for (const [id, node] of Object.entries(NODES)) {
+  if (node.code && highlighter) {
+    try { HIGHLIGHTED[id] = highlighter.codeToHtml(node.code, { lang: node.lang, theme: 'vitesse-dark' }); }
+    catch (e) { console.warn(`Highlight failed for ${id}:`, e); }
+  }
+}
+
+const MERMAID_THEME = {
+  primaryColor: '#0a0a0a', primaryTextColor: '#ffffff', primaryBorderColor: '#2a2a2a',
+  lineColor: '#a0a0a0', background: '#000000',
+};
+const MERMAID_CONFIG = KIND === 'er'
+  ? {
+      startOnLoad: false, theme: 'dark', securityLevel: 'loose',
+      themeVariables: {
+        ...MERMAID_THEME,
+        entityBkg: '#0a0a0a', entityBorder: '#7c3aed', entityTextColor: '#ffffff',
+        attributeBackgroundColorEven: '#0a0a0a', attributeBackgroundColorOdd: '#141414',
+        labelColor: '#a0a0a0', relationColor: '#a855f7',
+      },
+      er: { useMaxWidth: false, layoutDirection: 'TB' },
+    }
+  : {
+      startOnLoad: false, theme: 'dark', securityLevel: 'loose',
+      themeVariables: {
+        ...MERMAID_THEME,
+        secondaryColor: '#000000', tertiaryColor: '#000000',
+        mainBkg: '#0a0a0a', nodeBorder: '#2a2a2a',
+        clusterBkg: 'rgba(10,10,10,0.8)', clusterBorder: '#7c3aed',
+        titleColor: '#ffffff', edgeLabelBackground: 'transparent',
+      },
+      flowchart: { useMaxWidth: false, htmlLabels: true, curve: 'basis' },
+    };
+
+// The SVG group that draws a node: flowchart ids look like "flowchart-<id>-<n>",
+// ER groups are tagged by attachEntityClicks below.
+function nodeElement(root, nodeId) {
+  if (KIND === 'er') return root.querySelector(`[data-entity="${nodeId}"]`);
+  const re = new RegExp(`^flowchart-${nodeId}-\\d+$`);
+  return [...root.querySelectorAll('.node')].find(n => re.test(n.id)) || null;
+}
+function allNodeElements(root) {
+  return root.querySelectorAll(KIND === 'er' ? '[data-entity]' : '.node');
+}
+
+// ER entities take no `click` directive: find each entity's group and bind it by hand.
+function attachEntityClicks(root, onClick) {
+  for (const name of Object.keys(NODES)) {
+    let group = root.querySelector(`g[id^="entity-${name}-"], g[id="entity-${name}"]`);
+    if (!group) {
+      const label = [...root.querySelectorAll('text, span, div, p')]
+        .find(el => el.textContent.trim() === name);
+      group = label && (label.closest('g.node') || label.closest('g'));
+    }
+    if (!group) { console.warn('entity not found:', name); continue; }
+    group.dataset.entity = name;
+    group.classList.add('wt-entity');
+    group.addEventListener('click', () => onClick(name));
+  }
+}
+
+function usePanZoom() {
+  const viewportRef = useRef(null), canvasRef = useRef(null), zoomDisplayRef = useRef(null);
+  const st = useRef({ zoom: 1, panX: 0, panY: 0 });
+  const drag = useRef({ on: false, lx: 0, ly: 0 });
+
+  const apply = useCallback(() => {
+    const { zoom, panX, panY } = st.current;
+    if (canvasRef.current) canvasRef.current.style.transform = `translate(${panX}px,${panY}px) scale(${zoom})`;
+    if (zoomDisplayRef.current) zoomDisplayRef.current.textContent = Math.round(zoom * 100) + '%';
+  }, []);
+
+  const fitToScreen = useCallback(() => {
+    const svg = canvasRef.current?.querySelector('svg');
+    const vp = viewportRef.current;
+    if (!svg || !vp) return;
+    const s = st.current;
+    const vw = vp.clientWidth, vh = vp.clientHeight;
+    const sw = canvasRef.current.getBoundingClientRect().width / s.zoom;
+    const sh = canvasRef.current.getBoundingClientRect().height / s.zoom;
+    const fit = Math.max(0.15, Math.min(2, Math.min((vw - 40) / sw, (vh - 40) / sh)));
+    s.zoom = fit; s.panX = (vw - sw * fit) / 2; s.panY = (vh - sh * fit) / 2;
+    apply();
+  }, [apply]);
+
+  useEffect(() => {
+    const vp = viewportRef.current;
+    if (!vp) return;
+    const onWheel = (e) => {
+      e.preventDefault();
+      const r = vp.getBoundingClientRect();
+      const mx = e.clientX - r.left, my = e.clientY - r.top, s = st.current;
+      const f = e.deltaY < 0 ? 1.12 : 1 / 1.12;
+      const nz = Math.min(4, Math.max(0.15, s.zoom * f)), sc = nz / s.zoom;
+      s.panX = mx - sc * (mx - s.panX); s.panY = my - sc * (my - s.panY); s.zoom = nz;
+      apply();
+    };
+    const onDown = (e) => {
+      if (e.target.closest('.node, .wt-entity')) return;
+      drag.current = { on: true, lx: e.clientX, ly: e.clientY };
+      vp.setPointerCapture(e.pointerId);
+    };
+    const onMove = (e) => {
+      const d = drag.current; if (!d.on) return;
+      st.current.panX += e.clientX - d.lx; st.current.panY += e.clientY - d.ly;
+      d.lx = e.clientX; d.ly = e.clientY; apply();
+    };
+    const onUp = () => { drag.current.on = false; };
+    vp.addEventListener('wheel', onWheel, { passive: false });
+    vp.addEventListener('pointerdown', onDown);
+    vp.addEventListener('pointermove', onMove);
+    vp.addEventListener('pointerup', onUp);
+    vp.addEventListener('pointercancel', onUp);
+    window.addEventListener('resize', fitToScreen);
+    return () => {
+      vp.removeEventListener('wheel', onWheel);
+      vp.removeEventListener('pointerdown', onDown);
+      vp.removeEventListener('pointermove', onMove);
+      vp.removeEventListener('pointerup', onUp);
+      vp.removeEventListener('pointercancel', onUp);
+      window.removeEventListener('resize', fitToScreen);
+    };
+  }, [apply, fitToScreen]);
+
+  const zoomIn = useCallback(() => { st.current.zoom = Math.min(4, st.current.zoom * 1.25); apply(); }, [apply]);
+  const zoomOut = useCallback(() => { st.current.zoom = Math.max(0.15, st.current.zoom / 1.25); apply(); }, [apply]);
+  return { viewportRef, canvasRef, zoomDisplayRef, zoomIn, zoomOut, fitToScreen };
+}
+
+function MermaidDiagram({ onNodeClick, onRendered }) {
+  const ref = useRef(null);
+  useEffect(() => {
+    window.nodeClickHandler = onNodeClick;
+    mermaid.initialize(MERMAID_CONFIG);
+    mermaid.render('walkthrough-diagram', DIAGRAM).then(({ svg, bindFunctions }) => {
+      if (!ref.current) return;
+      ref.current.innerHTML = svg;
+      bindFunctions?.(ref.current);
+      if (KIND === 'er') attachEntityClicks(ref.current, onNodeClick);
+      document.body.dataset.rendered = 'true';
+      onRendered();
+    }).catch((e) => {
+      console.error('Mermaid render failed:', e);
+      document.body.dataset.rendered = 'error';
+      if (ref.current) ref.current.textContent = 'Diagram failed to render: ' + e.message;
+    });
+    return () => { delete window.nodeClickHandler; };
+  }, [onNodeClick, onRendered]);
+  return h('div', { ref, className: 'mermaid-wrap' });
+}
+
+function Summary({ collapsed, onToggle }) {
+  if (collapsed) {
+    return h('div', {
+      onClick: onToggle,
+      className: 'fixed top-16 left-6 z-10 px-3 py-1.5 bg-wt-surface/60 backdrop-blur border border-wt-border rounded-full shadow-lg cursor-pointer hover:bg-wt-surface/80 transition-all duration-300',
+    }, h('span', { className: 'text-xs text-wt-muted font-medium' }, 'ℹ︎ Summary'));
+  }
+  return h('div', {
+    onClick: onToggle,
+    className: 'fixed top-16 left-6 z-10 max-w-lg px-4 py-3 bg-wt-surface/80 backdrop-blur border border-wt-border rounded-lg shadow-lg cursor-pointer transition-all duration-300',
+  },
+    h('p', { className: 'text-sm text-wt-muted leading-relaxed' }, SUMMARY),
+    h('p', { className: 'text-[0.65rem] text-wt-muted/50 mt-1.5' }, 'Click to dismiss'));
+}
+
+function DetailPanel({ nodeId, node, onClose }) {
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === 'Escape') onClose(); };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [onClose]);
+  const codeHtml = HIGHLIGHTED[nodeId];
+  return h('div', {
+    className: 'fixed top-4 right-4 bottom-4 w-[560px] max-w-[calc(100vw-2rem)] z-30 bg-wt-surface border border-wt-border rounded-xl shadow-2xl flex flex-col overflow-hidden',
+  },
+    h('button', {
+      onClick: onClose,
+      className: 'absolute top-3 right-3 z-10 w-7 h-7 rounded-md border border-wt-border bg-wt-raised text-wt-muted flex items-center justify-center text-lg hover:bg-wt-red hover:border-wt-red hover:text-white transition-colors',
+    }, '×'),
+    h('div', { className: 'flex-1 overflow-y-auto p-5' },
+      h('h2', { className: 'text-lg font-bold text-wt-fg mb-3 pr-9' }, node.title),
+      h('div', { className: 'dt-body' }, h('p', null, node.description)),
+      h('div', { className: 'dt-body' },
+        codeHtml
+          ? h('div', { dangerouslySetInnerHTML: { __html: codeHtml } })
+          : h('pre', { className: 'code-fallback' }, h('code', null, node.code))),
+      h('div', { className: 'mt-4 pt-3 border-t border-wt-border' },
+        h('div', { className: 'text-[0.7rem] uppercase tracking-wider text-wt-muted font-semibold mb-1.5' }, 'Files'),
+        h('code', { className: 'text-sm text-wt-file font-mono leading-relaxed break-all' },
+          node.files.map((f, i) => h('span', { key: i }, f, h('br'))))))
+  );
+}
+
+function ZoomControls({ zoomDisplayRef, onZoomIn, onZoomOut, onFit }) {
+  const btn = 'w-8 h-8 rounded-md border border-wt-border bg-wt-surface text-wt-muted hover:bg-wt-raised hover:text-wt-fg transition-colors text-sm';
+  return h('div', { className: 'fixed bottom-5 left-5 z-20 flex items-center gap-1.5' },
+    h('button', { className: btn, onClick: onZoomOut, title: 'Zoom out' }, '−'),
+    h('span', { ref: zoomDisplayRef, className: 'w-12 text-center text-xs text-wt-muted tabular-nums' }, '100%'),
+    h('button', { className: btn, onClick: onZoomIn, title: 'Zoom in' }, '+'),
+    h('button', { className: btn + ' w-auto px-2.5', onClick: onFit, title: 'Fit to screen' }, 'Fit'));
+}
+
+// Jump between the walkthroughs of this folder.
+function PageNav() {
+  return h('div', { className: 'fixed top-3.5 right-5 z-20' },
+    h('select', {
+      value: SLUG,
+      onChange: (e) => { window.location.href = `walkthrough-${e.target.value}.html`; },
+      className: 'bg-wt-surface border border-wt-border rounded-md text-xs text-wt-muted px-2 py-1.5 cursor-pointer',
+      'aria-label': 'Other walkthroughs',
+    }, PAGES.map(p => h('option', { key: p.slug, value: p.slug }, p.title))));
+}
+
+function App() {
+  const [activeId, setActiveId] = useState(null);
+  const [summaryCollapsed, setSummaryCollapsed] = useState(true);
+  const pz = usePanZoom();
+
+  const setActiveNode = useCallback((nodeId) => {
+    setActiveId(nodeId);
+    const root = document.querySelector('.mermaid-wrap');
+    allNodeElements(root).forEach(n => { n.style.opacity = nodeId ? '0.4' : '1'; });
+    const el = nodeId && nodeElement(root, nodeId);
+    if (el) el.style.opacity = '1';
+  }, []);
+  const closeDetail = useCallback(() => {
+    setActiveId(null);
+    allNodeElements(document.querySelector('.mermaid-wrap')).forEach(n => { n.style.opacity = '1'; });
+  }, []);
+  const onRendered = useCallback(() => { setTimeout(pz.fitToScreen, 50); }, [pz.fitToScreen]);
+
+  return h(React.Fragment, null,
+    h('header', { className: 'fixed top-0 inset-x-0 z-10 px-6 py-3.5 bg-gradient-to-b from-wt-bg to-transparent pointer-events-none' },
+      h('h1', { className: 'text-base font-semibold text-wt-fg' }, TITLE),
+      h('p', { className: 'text-sm text-wt-muted mt-0.5' }, SUBTITLE)),
+    h(Summary, { collapsed: summaryCollapsed, onToggle: () => setSummaryCollapsed(c => !c) }),
+    h('div', { ref: pz.viewportRef, className: 'w-full h-screen overflow-hidden cursor-grab active:cursor-grabbing' },
+      h('div', { ref: pz.canvasRef, className: 'origin-top-left will-change-transform inline-block p-[80px_60px_60px]' },
+        h(MermaidDiagram, { onNodeClick: setActiveNode, onRendered }))),
+    h(ZoomControls, { zoomDisplayRef: pz.zoomDisplayRef, onZoomIn: pz.zoomIn, onZoomOut: pz.zoomOut, onFit: pz.fitToScreen }),
+    h('div', { className: 'fixed bottom-5 left-1/2 -translate-x-1/2 z-20 flex flex-wrap justify-center gap-4 px-4 py-2 bg-wt-surface border border-wt-border rounded-lg shadow-xl' },
+      LEGEND.map(l => h('span', { key: l.label, className: 'flex items-center gap-1.5 text-xs text-wt-muted whitespace-nowrap' },
+        h('span', { className: 'w-2 h-2 rounded-full', style: { background: l.color } }), l.label))),
+    h(PageNav),
+    activeId && NODES[activeId] && h(DetailPanel, { nodeId: activeId, node: NODES[activeId], onClose: closeDetail }),
+    h('div', { className: 'fixed bottom-5 right-5 z-20 text-xs text-wt-muted opacity-50' },
+      h('kbd', null, 'Scroll'), ' zoom · ', h('kbd', null, 'Drag'), ' pan · Click nodes'));
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(h(App));
+</script>
+</body>
+</html>

@@ -1,0 +1,173 @@
+syntax = "proto3";
+
+package music_room.v1;
+
+import "google/api/annotations.proto";
+import "music_room/v1/dto/delegation.proto";
+
+option go_package = "music_room/v1;pbv1";
+
+// Public UUIDs on the wire, internal ids inside the server.
+//
+// Every request that names an object carries its `*_public_id` -- the UUID the
+// API hands back in a DTO. The matching int64 field is filled in by the
+// authorization interceptor once it has resolved that UUID and run the
+// permission check, so a client never sends one. That is what makes the object
+// that was CHECKED and the row the handler TOUCHES provably the same object.
+//
+// The caller's own id comes from the session token, never from the request: a
+// `*_public_id` naming the caller is verified against the session and rejected
+// when it disagrees. See backend/internal/interceptor/policy.go and
+// docs/permissions.md.
+
+// Music Control Delegation (V.2.2): a user registers the devices attached to
+// their account and can delegate playback control on one of them to a
+// friend, either as a standing grant or scoped to one event.
+service DelegationService {
+  // Registers a device on the caller's account, or updates it, and binds the
+  // calling session to it.
+  //
+  // Self only. Calling again with the same `device_identifier` updates the
+  // existing device instead of adding a second one. From then on every call
+  // made with this session is logged against the device (V.6), and the server
+  // knows which device a playback command comes from without the client
+  // naming it. Call it after each sign-in and on each app launch.
+  rpc RegisterDevice(RegisterDeviceRequest) returns (RegisterDeviceResponse) {
+    option (google.api.http) = {
+      post: "/v1/users/{user_public_id}/devices"
+      body: "*"
+    };
+  }
+  // Lists the caller's active devices.
+  //
+  // Self only: nobody can list another user's devices.
+  rpc ListMyDevices(ListMyDevicesRequest) returns (ListMyDevicesResponse) {
+    option (google.api.http) = {get: "/v1/users/{user_public_id}/devices"};
+  }
+  // Delegates control of a device to a friend.
+  //
+  // Device owner only, and the grantee must be a friend (V.2.2: "give the
+  // music control to different friends"). For one event, `event_public_id`,
+  // which is required: there is no licence for every event.
+  rpc GrantDeviceControl(GrantDeviceControlRequest) returns (GrantDeviceControlResponse) {
+    option (google.api.http) = {
+      post: "/v1/devices/{device_public_id}/control-licenses"
+      body: "*"
+    };
+  }
+  // Revokes a control delegation on a device.
+  //
+  // Device owner only. NotFound when the license does not belong to the device
+  // or is no longer active.
+  rpc RevokeDeviceControl(RevokeDeviceControlRequest) returns (RevokeDeviceControlResponse) {
+    option (google.api.http) = {delete: "/v1/devices/{device_public_id}/control-licenses/{license_id}"};
+  }
+  // Lists who currently has control of a device.
+  //
+  // Device owner only; a missing device and a device the caller does not own
+  // both return NotFound. Only active delegations are returned.
+  rpc ListDeviceControlLicenses(ListDeviceControlLicensesRequest) returns (ListDeviceControlLicensesResponse) {
+    option (google.api.http) = {get: "/v1/devices/{device_public_id}/control-licenses"};
+  }
+  // Makes one of the host's devices the one that plays an event's music (its
+  // speaker), in place of the device of their first play.
+  //
+  // The event's host only, on a device of their own, and not on an ended
+  // event. The event's licences move with it: a friend given control of the
+  // speaker for this event keeps it on the new one, and loses it on the old
+  // one. Every open WatchEvent stream gets the new speaker.
+  rpc SetEventSpeaker(SetEventSpeakerRequest) returns (SetEventSpeakerResponse) {
+    option (google.api.http) = {
+      put: "/v1/events/{event_public_id}/speaker"
+      body: "*"
+    };
+  }
+}
+
+// A device to attach to the caller's account.
+message RegisterDeviceRequest {
+  int64 user_id = 1; // Filled by the server; clients leave it unset.
+  string device_identifier = 2; // stable id the client generates once at install time.
+  string name = 3;
+  string platform = 4; // ios | android | web | desktop
+  string user_public_id = 5; // the caller; may be omitted (taken from the session), must match it otherwise.
+  // Optional. Stored on the device and snapshotted into every activity log
+  // row it makes (V.6), so the app sends them on every launch to keep
+  // app_version current after an update.
+  string model = 6;
+  string os_version = 7;
+  string app_version = 8;
+}
+
+// The registered (or updated) device.
+message RegisterDeviceResponse {
+  DeviceDTO device = 1;
+}
+
+// Whose devices to list: always the caller.
+message ListMyDevicesRequest {
+  int64 user_id = 1; // Filled by the server; clients leave it unset.
+  string user_public_id = 2; // the caller; may be omitted (taken from the session), must match it otherwise.
+}
+
+// The caller's active devices.
+message ListMyDevicesResponse {
+  repeated DeviceDTO devices = 1;
+}
+
+// A delegation of one device to one friend, standing or for one event.
+message GrantDeviceControlRequest {
+  int64 device_id = 1; // Filled by the server; clients leave it unset.
+  int64 granter_user_id = 2; // Filled by the server; clients leave it unset.
+  int64 grantee_user_id = 3; // Filled by the server; clients leave it unset.
+  int64 event_id = 4; // Filled by the server; clients leave it unset.
+  string device_public_id = 5;
+  string granter_user_public_id = 6; // the caller, who must own the device; may be omitted.
+  string grantee_user_public_id = 7; // must be a friend of the granter, and not the granter.
+  string event_public_id = 8; // required: the licence applies to this event only.
+}
+
+// The new delegation.
+message GrantDeviceControlResponse {
+  DeviceControlLicenseDTO license = 1;
+}
+
+// The delegation to revoke.
+message RevokeDeviceControlRequest {
+  int64 device_id = 1; // Filled by the server; clients leave it unset.
+  int64 license_id = 2; // internal license id (DeviceControlLicenseDTO.id), not a public UUID.
+  int64 revoker_user_id = 3; // Filled by the server; clients leave it unset.
+  string device_public_id = 4;
+  string revoker_user_public_id = 5; // the caller, who must own the device; may be omitted.
+}
+
+// Empty.
+message RevokeDeviceControlResponse {}
+
+// The device whose delegations to list.
+message ListDeviceControlLicensesRequest {
+  int64 device_id = 1; // Filled by the server; clients leave it unset.
+  int64 viewer_user_id = 2; // Filled by the server; clients leave it unset.
+  string device_public_id = 3;
+  string viewer_user_public_id = 4; // the caller, who must own the device; may be omitted.
+}
+
+// The device's active delegations.
+message ListDeviceControlLicensesResponse {
+  repeated DeviceControlLicenseDTO licenses = 1;
+}
+
+// The event, and the device to play its music.
+message SetEventSpeakerRequest {
+  int64 event_id = 1; // Filled by the server; clients leave it unset.
+  int64 device_id = 2; // Filled by the server; clients leave it unset.
+  int64 host_user_id = 3; // Filled by the server; clients leave it unset.
+  string event_public_id = 4;
+  string device_public_id = 5; // one of the host's devices.
+  string host_user_public_id = 6; // the caller, the event's host; may be omitted.
+}
+
+// The event's new speaker.
+message SetEventSpeakerResponse {
+  DeviceDTO device = 1;
+}

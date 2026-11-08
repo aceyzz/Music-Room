@@ -1,0 +1,17 @@
+version: v2
+# The frontend half of buf.gen.yaml: what the frontend image (frontend/Dockerfile)
+# runs. No Go plugin here -- the app only needs the Dart stubs and the spec the
+# OpenAPI client is generated from. Keep both entries in step with buf.gen.yaml.
+plugins:
+  - local: protoc-gen-dart
+    out: frontend/app/lib/gen
+    opt:
+      - grpc
+
+  - local: protoc-gen-openapiv2
+    out: frontend/app/lib/gen
+    strategy: all
+    opt:
+      - allow_merge=true
+      - merge_file_name=api_spec
+      - json_names_for_fields=false

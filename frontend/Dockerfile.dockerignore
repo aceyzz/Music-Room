@@ -1,0 +1,36 @@
+# Ignore file for frontend/Dockerfile, whose context is the repository root
+# (the protos and buf config live up there). Everything is out except what the
+# Dockerfile copies.
+*
+!proto
+!buf.yaml
+!buf.lock
+!buf.gen.frontend.yaml
+!frontend/app
+!frontend/phone
+
+# Host build output and caches: hundreds of MB, and stale paths from the host
+# (local.properties points at the host's SDK).
+frontend/app/build
+frontend/app/linux/flutter/ephemeral
+frontend/app/.dart_tool
+frontend/app/.flutter-plugins-dependencies
+frontend/app/android/.gradle
+frontend/app/android/local.properties
+frontend/app/android/key.properties
+frontend/app/android/app/debug
+frontend/app/android/app/profile
+frontend/app/android/app/release
+
+# Generated: the image makes its own, from the protos above.
+frontend/app/lib/gen
+
+# The image builds the Android APK and the Linux app (the phone) only.
+frontend/app/ios
+frontend/app/macos
+frontend/app/windows
+frontend/app/web
+
+# Never into an image: OAuth ids, DEV_SESSION_TOKEN.
+frontend/app/.env
+frontend/app/.env.*

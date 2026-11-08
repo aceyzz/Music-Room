@@ -1,0 +1,4 @@
+# Consumed by `fga store import` (the openfga-init compose service).
+# `model_file` is resolved relative to this file.
+name: music-room
+model_file: ./model.fga

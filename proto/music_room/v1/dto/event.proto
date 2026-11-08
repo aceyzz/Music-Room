@@ -1,0 +1,102 @@
+syntax = "proto3";
+
+package music_room.v1;
+
+import "music_room/v1/dto/song.proto";
+
+option go_package = "music_room/v1;pbv1";
+
+// Data types for the event service (Music Track Vote / live playlist).
+
+// A music event (Music Track Vote): a live, voted queue of songs.
+message MusicEventDTO {
+  int64 id = 1; // internal id; clients use public_id.
+  string public_id = 2; // the UUID clients name this event by.
+  int64 host_id = 3; // internal id of the host.
+  int64 source_playlist_id = 4; // 0 = not derived from a playlist.
+  string name = 5;
+  string description = 6;
+  string visibility = 7; // public | private
+  string vote_license = 8; // everyone | invited_only | location_time
+  // scheduled | live | ended. scheduled -> live on the host's first play
+  // (PlayNextInEventQueue), even before starts_at; -> ended by EndEvent, or
+  // by the server once past ends_at with the music stopped. Pausing is the
+  // music's (EventPlaybackDTO.is_paused): the event stays live.
+  string status = 9;
+  int64 revision = 10; // bumped on every change to the event.
+  int64 created_at = 11; // unix seconds.
+  int64 updated_at = 12; // unix seconds.
+  // When the event is planned to run, unix seconds; 0 = not set (both are
+  // optional on the row). Clients sort events into past / now / upcoming
+  // with these and `status`.
+  int64 starts_at = 13;
+  int64 ends_at = 14;
+  int64 deleted_at = 15; // 0 = not deleted. Set by DeleteEvent.
+  // What the event's player is doing: playing | paused | idle (no song: the
+  // queue ran dry, or nothing has played yet). Set by GetMusicEvents and
+  // GetMusicEvent, for lists and info pages; empty in other answers, which
+  // carry the full EventPlaybackDTO when they need it.
+  string playback = 16;
+  // Where a location_time event counts votes from: its venue, in degrees,
+  // and how far from it, in meters. 0 for any other licence.
+  double venue_latitude = 17;
+  double venue_longitude = 18;
+  int32 venue_radius_meters = 19;
+  // Whether the caller hosts it. Set by GetMusicEvents and GetMusicEvent;
+  // false in other answers.
+  bool viewer_is_host = 20;
+  // Whether the caller hosts it or was invited to it: Home shows these. Set
+  // by GetMusicEvents; false in other answers.
+  bool viewer_is_member = 21;
+  // A picture for the event's card: the cover of the song playing, else of
+  // the next one. Empty when there is none. Set by GetMusicEvents and
+  // GetMusicEvent.
+  string cover_url = 22;
+}
+
+// A member of an event: the host, or a user invited to a private event so
+// they can find it, suggest songs and vote (V.2.1 visibility management).
+message EventMemberDTO {
+  int64 user_id = 1; // internal id; clients use user_public_id.
+  string display_name = 2;
+  string role = 3; // owner | admin | editor | viewer
+  int64 joined_at = 4; // unix seconds.
+  string user_public_id = 5; // the id to open their profile with (UserService.GetUser).
+  string avatar_storage_key = 6; // empty when they have no picture; served under /media/.
+}
+
+// One song in the live vote queue of an event.
+message EventQueueEntryDTO {
+  int64 id = 1; // internal id; clients use public_id.
+  // The id a client names this entry by when voting for it.
+  string public_id = 8;
+  int64 event_id = 2; // internal id.
+  int64 vote_count = 3;
+  // Unix seconds when vote_count reached its current value; breaks ties
+  // (the entry that reached the score first ranks first).
+  int64 score_reached_at = 4;
+  int64 suggested_by_id = 5; // internal id of the user who suggested it.
+  bool viewer_has_voted = 6; // whether the caller has voted for this entry.
+  SongDTO song = 7;
+}
+
+// The "radio station" for an event: what is currently playing, and where.
+// Position_ms is the playhead as of updated_at; a client computes the live
+// position as position_ms + (now - updated_at) when not paused.
+message EventPlaybackDTO {
+  int64 event_id = 1; // internal id.
+  int64 current_queue_entry_id = 2; // internal id; 0 = nothing playing yet.
+  // The music is paused (SetEventPlayback), or the event is not live:
+  // derived from both, the event's status deciding first.
+  bool is_paused = 3;
+  int32 position_ms = 4; // playhead as of updated_at, milliseconds.
+  int64 controller_user_id = 5; // internal id; 0 = no one has taken control yet.
+  int64 started_at = 6; // unix seconds; 0 = not started.
+  int64 updated_at = 7; // unix seconds.
+  SongDTO current_song = 8; // set only when current_queue_entry_id != 0.
+  // internal id of the device that plays the sound (docs/todo.md §4, D1);
+  // 0 = none yet. Set by the host's first play and never moved. A delegate's
+  // licence is checked against it, and only the app on this device plays the
+  // sound: the others compare it with their own DeviceDTO.id.
+  int64 speaker_device_id = 9;
+}

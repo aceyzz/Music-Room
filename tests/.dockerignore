@@ -1,0 +1,3 @@
+# Context for tests/Dockerfile: it copies requirements.txt and nothing else.
+*
+!requirements.txt

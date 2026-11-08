@@ -1,0 +1,77 @@
+syntax = "proto3";
+
+package music_room.v1;
+
+option go_package = "music_room/v1;pbv1";
+
+// A user's profile as seen by a given viewer: fields hidden by their
+// visibility scope for that viewer come back empty (see UserService.GetUser).
+message UserDTO {
+  int64 id = 1; // internal id; clients use public_id.
+  string public_id = 2; // the UUID clients name this user by.
+  string display_name = 3;
+  string avatar_storage_key = 4; // empty if no avatar, or profile not visible; served at GET /media/{avatar_storage_key}
+
+  string first_name = 5;
+  string last_name = 6;
+  string bio = 7;
+  string birth_date = 8; // YYYY-MM-DD
+  string city = 9;
+  string country_code = 10; // ISO 3166-1 alpha-2
+  string phone_number = 11;
+
+  string first_name_visibility = 12; // public | friends | private
+  string last_name_visibility = 13;
+  string bio_visibility = 14;
+  string birth_date_visibility = 15;
+  string location_visibility = 16; // covers city + country_code
+  string phone_visibility = 17;
+  string preferences_visibility = 18;
+
+  repeated MusicPreferenceDTO music_preferences = 19; // empty if hidden by preferences_visibility
+}
+
+// One music genre a user likes, with how much.
+message MusicPreferenceDTO {
+  int64 deezer_genre_id = 1;
+  string genre_name = 2;
+  int32 weight = 3; // 1..5
+}
+
+// A friend of the caller.
+message FriendDTO {
+  int64 id = 1; // internal id; clients use public_id.
+  string public_id = 2;
+  string display_name = 3;
+  string avatar_storage_key = 4; // empty if no avatar.
+  int64 friends_since_unix = 5; // unix seconds when the friendship started.
+}
+
+// A friend request between two users.
+message FriendRequestDTO {
+  int64 id = 1; // the request_id AcceptFriendRequest/DeclineFriendRequest take.
+  int64 requester_id = 2; // internal id of the sender.
+  int64 addressee_id = 3; // internal id of the recipient.
+  string status = 4; // pending | accepted | declined | cancelled
+  string message = 5; // optional note from the sender; may be empty.
+  int64 created_at = 6; // unix seconds.
+  // The other person: the requester for an incoming request, the addressee
+  // for an outgoing one. Filled by ListFriendRequests only; a client names
+  // people by public id, never by the int64s above.
+  UserSummaryDTO other_user = 7;
+}
+
+// Someone as a list of people shows them: search results, a request's sender.
+message UserSummaryDTO {
+  string public_id = 1;
+  string display_name = 2;
+  string avatar_storage_key = 3; // empty if no avatar
+}
+
+// A user the caller has blocked.
+message BlockedUserDTO {
+  int64 id = 1; // internal id; clients use public_id.
+  string public_id = 2;
+  string display_name = 3;
+  int64 blocked_at_unix = 4; // unix seconds when the block was made.
+}

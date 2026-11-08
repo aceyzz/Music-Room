@@ -1,0 +1,491 @@
+syntax = "proto3";
+
+package music_room.v1;
+
+import "google/api/annotations.proto";
+import "music_room/v1/dto/playlist.proto";
+
+option go_package = "music_room/v1;pbv1";
+
+// Public UUIDs on the wire, internal ids inside the server.
+//
+// Every request that names an object carries its `*_public_id` -- the UUID the
+// API hands back in a DTO. The matching int64 field is filled in by the
+// authorization interceptor once it has resolved that UUID and run the
+// permission check, so a client never sends one. That is what makes the object
+// that was CHECKED and the row the handler TOUCHES provably the same object.
+//
+// The caller's own id comes from the session token, never from the request: a
+// `*_public_id` naming the caller is verified against the session and rejected
+// when it disagrees. See backend/internal/interceptor/policy.go and
+// docs/permissions.md.
+
+service PlaylistService {
+  // Creates a playlist owned by the caller.
+  //
+  // Any signed-in user. The caller is added as the `owner` member in the same
+  // transaction. Empty visibility means `public`, empty edit_license means
+  // `everyone`.
+  rpc CreatePlaylist(CreatePlaylistRequest) returns (CreatePlaylistResponse) {
+    option (google.api.http) = {
+      post: "/v1/playlists"
+      body: "*"
+    };
+  }
+  // Makes a playlist public or private.
+  //
+  // Owner or admin of the playlist (playlist#can_change_visibility). An
+  // unknown playlist is refused as PERMISSION_DENIED, not NOT_FOUND.
+  rpc SetPlaylistVisibility(SetPlaylistVisibilityRequest) returns (SetPlaylistVisibilityResponse) {
+    option (google.api.http) = {
+      patch: "/v1/playlists/{playlist_public_id}/visibility"
+      body: "*"
+    };
+  }
+  // Sets who may edit the songs: anyone who can view it, or members only.
+  //
+  // Owner or admin of the playlist (playlist#can_change_license). An unknown
+  // playlist is refused as PERMISSION_DENIED. `everyone` never opens a
+  // private playlist: editing still requires being able to view it.
+  rpc SetPlaylistEditLicense(SetPlaylistEditLicenseRequest) returns (SetPlaylistEditLicenseResponse) {
+    option (google.api.http) = {
+      patch: "/v1/playlists/{playlist_public_id}/edit-license"
+      body: "*"
+    };
+  }
+  // Renames the playlist.
+  //
+  // Owner or admin (playlist#can_rename) -- same audience as
+  // SetPlaylistEditLicense/SetPlaylistVisibility, not owner-only. Logs a
+  // `rename` op.
+  rpc RenamePlaylist(RenamePlaylistRequest) returns (RenamePlaylistResponse) {
+    option (google.api.http) = {
+      patch: "/v1/playlists/{playlist_public_id}/name"
+      body: "*"
+    };
+  }
+  // Adds a song from the music provider to the end of the playlist.
+  //
+  // Anyone who may edit the songs (playlist#can_edit_songs: owner, admin,
+  // editor, or any viewer when the edit license is `everyone`). The song is
+  // fetched from Deezer and cached if it is not known yet. Bumps the playlist
+  // revision and logs an `add_song` op.
+  rpc AddSongToPlaylist(AddSongToPlaylistRequest) returns (AddSongToPlaylistResponse) {
+    option (google.api.http) = {
+      post: "/v1/playlists/{playlist_public_id}/songs"
+      body: "*"
+    };
+  }
+  // Removes one entry from the playlist.
+  //
+  // Same edit guard as AddSongToPlaylist. Bumps the revision and logs a
+  // `remove_song` op. An unknown playlist is refused as PERMISSION_DENIED.
+  rpc RemoveSongFromPlaylist(RemoveSongFromPlaylistRequest) returns (RemoveSongFromPlaylistResponse) {
+    option (google.api.http) = {delete: "/v1/playlists/{playlist_public_id}/songs/{playlist_song_id}"};
+  }
+  // Moves one song to just after another, or to the top.
+  //
+  // The subject's own example of concurrent editing. The move is relative,
+  // not "to index N": see MoveSongInPlaylistRequest. Same edit guard as
+  // AddSongToPlaylist; logs a `move_song` op.
+  rpc MoveSongInPlaylist(MoveSongInPlaylistRequest) returns (MoveSongInPlaylistResponse) {
+    option (google.api.http) = {
+      patch: "/v1/playlists/{playlist_public_id}/songs/{playlist_song_id}/position"
+      body: "*"
+    };
+  }
+  // Returns a playlist and its songs in order.
+  //
+  // Anyone who may view it (playlist#can_view: a member, or anyone when it is
+  // public). A missing playlist and a private one the caller cannot see both
+  // answer NOT_FOUND, so the reply never confirms that it exists.
+  rpc GetPlaylist(GetPlaylistRequest) returns (GetPlaylistResponse) {
+    option (google.api.http) = {get: "/v1/playlists/{playlist_public_id}"};
+  }
+  // Streams the playlist: its current state at once, then again after every
+  // change anyone makes to it (songs, name, visibility, licence, cover,
+  // members), so every open editor sees the others' edits live.
+  //
+  // Same permission as GetPlaylist, checked when the stream opens and again
+  // before every send: a viewer who loses playlist#can_view (the playlist
+  // went private, or was deleted) gets NotFound and the stream ends. Each
+  // message is a whole state; order them by playlist.revision.
+  rpc WatchPlaylist(WatchPlaylistRequest) returns (stream WatchPlaylistResponse) {
+    option (google.api.http) = {get: "/v1/playlists/{playlist_public_id}/watch"};
+  }
+  // Lists every playlist the caller may view.
+  //
+  // Their own (any role) plus every public one, site-wide. The authorization
+  // question IS the query -- OpenFGA ListObjects(can_view), not a Go WHERE
+  // clause -- so a playlist this service does not yet know how to check for
+  // is a playlist this RPC cannot leak (docs/todo.md §2). Not paginated.
+  rpc ListPlaylists(ListPlaylistsRequest) returns (ListPlaylistsResponse) {
+    option (google.api.http) = {get: "/v1/playlists"};
+  }
+  // The caller's library, for the app's Playlists tab: the playlists they own
+  // or are a member of, plus the public playlists of their friends. Owners
+  // blocked in either direction are left out. Most recently changed first.
+  //
+  // Same authorization as ListPlaylists -- ListObjects(can_view) -- then
+  // narrowed to the library in SQL, so it can never list a playlist the caller
+  // may not view. Not paginated.
+  rpc ListLibraryPlaylists(ListLibraryPlaylistsRequest) returns (ListLibraryPlaylistsResponse) {
+    option (google.api.http) = {get: "/v1/users/{viewer_public_id}/playlists"};
+  }
+  // Searches every public playlist by name, for the app's Public pill.
+  //
+  // Public and not deleted, name containing `query` (any case; every public
+  // playlist when empty), newest first. Owners blocked in either direction are
+  // left out. Paged: pass back next_page_token, empty on the last page.
+  //
+  // No per-object check: a public playlist is viewable by everyone by
+  // definition, and playlists.visibility is what the OpenFGA wildcard tuple
+  // is written from, so the SQL filter is the authorization.
+  rpc SearchPublicPlaylists(SearchPublicPlaylistsRequest) returns (SearchPublicPlaylistsResponse) {
+    option (google.api.http) = {get: "/v1/users/{viewer_public_id}/playlists/public"};
+  }
+  // Soft-deletes the playlist.
+  //
+  // Sets deleted_at. Owner-only -- can_delete does not extend to admins,
+  // unlike most other playlist permissions. No cascade: every read and every
+  // id resolution already filters on deleted_at IS NULL, so the playlist
+  // becomes unreachable through every other RPC the instant this commits.
+  rpc DeletePlaylist(DeletePlaylistRequest) returns (DeletePlaylistResponse) {
+    option (google.api.http) = {delete: "/v1/playlists/{playlist_public_id}"};
+  }
+  // Hands the playlist to an existing member.
+  //
+  // Owner-only. The current owner is demoted to admin, not removed -- they
+  // keep day-to-day management, just not can_delete/can_transfer_ownership.
+  rpc TransferPlaylistOwnership(TransferPlaylistOwnershipRequest) returns (TransferPlaylistOwnershipResponse) {
+    option (google.api.http) = {
+      post: "/v1/playlists/{playlist_public_id}/ownership-transfer"
+      body: "*"
+    };
+  }
+  // Lists the people of a playlist: the owner, then admins, editors and
+  // viewers.
+  //
+  // Anyone who can view the playlist (playlist#can_view), the same audience
+  // as GetPlaylist; NotFound otherwise.
+  rpc ListPlaylistMembers(ListPlaylistMembersRequest) returns (ListPlaylistMembersResponse) {
+    option (google.api.http) = {get: "/v1/playlists/{playlist_public_id}/members"};
+  }
+  // Invites a user to the playlist.
+  //
+  // The invitee becomes a member, so they can find a private playlist and,
+  // if the license is invited_only, edit it. Owner, admin or editor
+  // (playlist#can_invite); the invitee must be able to receive an invitation
+  // from the caller, so a block between them stops it. No separate accept
+  // step.
+  rpc InviteToPlaylist(InviteToPlaylistRequest) returns (InviteToPlaylistResponse) {
+    option (google.api.http) = {
+      post: "/v1/playlists/{playlist_public_id}/members"
+      body: "*"
+    };
+  }
+
+  // Uploads or replaces the playlist cover.
+  //
+  // image_data goes through the Rust image-service to produce a square
+  // thumbnail, both the original and the thumbnail are stored, and any
+  // previous cover is replaced. Owner or admin (playlist#can_set_cover).
+  // Same pattern as UserService.UploadAvatar (internal/user/service.go).
+  rpc SetPlaylistCover(SetPlaylistCoverRequest) returns (SetPlaylistCoverResponse) {
+    option (google.api.http) = {
+      post: "/v1/playlists/{playlist_public_id}/cover"
+      body: "*"
+    };
+  }
+  // Removes the playlist cover.
+  //
+  // Owner or admin (playlist#can_set_cover). Idempotent: succeeds when there
+  // is no cover.
+  rpc DeletePlaylistCover(DeletePlaylistCoverRequest) returns (DeletePlaylistCoverResponse) {
+    option (google.api.http) = {delete: "/v1/playlists/{playlist_public_id}/cover"};
+  }
+
+  // Replays the playlist's change log after a given revision.
+  //
+  // A client that was at since_revision asks for everything after it and
+  // applies it in order: revisions are gapless, so receiving N+1..N+k proves
+  // nothing was missed. The app does not use it: WatchPlaylist sends it the
+  // whole playlist after every change. Covers and members are not journaled.
+  // Same visibility gate as GetPlaylist: the op log is not more exposed than
+  // the playlist itself.
+  rpc ListPlaylistOpsSince(ListPlaylistOpsSinceRequest) returns (ListPlaylistOpsSinceResponse) {
+    option (google.api.http) = {get: "/v1/playlists/{playlist_public_id}/ops"};
+  }
+}
+
+// Creates a playlist owned by the caller.
+message CreatePlaylistRequest {
+  int64 owner_id = 1; // Filled by the server; clients leave it unset.
+  string name = 2; // must not be empty.
+  string visibility = 3; // public | private, defaults to "public" when empty.
+  string edit_license = 4; // everyone | invited_only, defaults to "everyone" when empty.
+  string owner_public_id = 5; // the caller; must match the session.
+}
+
+// The new playlist, with zero songs and revision 0.
+message CreatePlaylistResponse {
+  PlaylistDTO playlist = 1;
+}
+
+// Makes a playlist public or private.
+message SetPlaylistVisibilityRequest {
+  int64 playlist_id = 1; // Filled by the server; clients leave it unset.
+  string visibility = 2; // public | private
+  string playlist_public_id = 3;
+}
+
+// The playlist after the change.
+message SetPlaylistVisibilityResponse {
+  PlaylistDTO playlist = 1;
+}
+
+// Sets the playlist's edit license.
+message SetPlaylistEditLicenseRequest {
+  int64 playlist_id = 1; // Filled by the server; clients leave it unset.
+  string edit_license = 2; // everyone | invited_only
+  string playlist_public_id = 3;
+}
+
+// The playlist after the change.
+message SetPlaylistEditLicenseResponse {
+  PlaylistDTO playlist = 1;
+}
+
+// Renames a playlist.
+message RenamePlaylistRequest {
+  int64 playlist_id = 1; // Filled by the server; clients leave it unset.
+  string name = 2; // must not be empty.
+  string playlist_public_id = 3;
+}
+
+// The playlist after the rename.
+message RenamePlaylistResponse {
+  PlaylistDTO playlist = 1;
+}
+
+// Adds a song to the end of a playlist.
+message AddSongToPlaylistRequest {
+  int64 playlist_id = 1; // Filled by the server; clients leave it unset.
+  int64 deezer_song_id = 2; // The ID of the song from the music provider service, not the internal song ID.
+  int64 user_id = 3; // Filled by the server; clients leave it unset.
+  string playlist_public_id = 4;
+  string user_public_id = 5; // the caller; must match the session.
+  // false: a song already in the playlist is refused with ALREADY_EXISTS, so
+  // the app can ask "add it still?". true: added again anyway (the schema
+  // allows duplicates). Checked under the playlist's row lock, so two people
+  // adding the same song at once cannot both pass with false.
+  bool allow_duplicate = 6;
+}
+
+// The playlist and its songs after the add.
+message AddSongToPlaylistResponse {
+  PlaylistDTO playlist = 1; // counters and revision updated.
+  repeated PlaylistSongDTO songs = 2; // the whole playlist after the add, in order.
+}
+
+// Removes one entry from a playlist.
+message RemoveSongFromPlaylistRequest {
+  int64 playlist_id = 1; // Filled by the server; clients leave it unset.
+  // PlaylistSongDTO.id: the playlist entry, not the song. Must belong to this
+  // playlist, otherwise NOT_FOUND.
+  int64 playlist_song_id = 2;
+  int64 user_id = 3; // Filled by the server; clients leave it unset.
+  string playlist_public_id = 4;
+  string user_public_id = 5; // the caller; must match the session.
+}
+
+// The playlist and its remaining songs after the removal.
+message RemoveSongFromPlaylistResponse {
+  PlaylistDTO playlist = 1; // counters and revision updated.
+  repeated PlaylistSongDTO songs = 2; // every remaining song, in order.
+}
+
+// "Put playlist_song_id right after after_playlist_song_id", 0 meaning the top.
+// Relative on purpose, with no base revision: the anchor still means the same
+// thing after other people's edits elsewhere in the list, so a move is refused
+// (NOT_FOUND) only when the song or its anchor has been removed meanwhile.
+message MoveSongInPlaylistRequest {
+  int64 playlist_id = 1; // Filled by the server; clients leave it unset.
+  int64 playlist_song_id = 2; // PlaylistSongDTO.id
+  int64 after_playlist_song_id = 3; // PlaylistSongDTO.id, 0 = to the top.
+  int64 user_id = 4; // Filled by the server; clients leave it unset.
+  string playlist_public_id = 5;
+  string user_public_id = 6; // the caller; must match the session.
+}
+
+// The playlist and its songs after the move.
+message MoveSongInPlaylistResponse {
+  PlaylistDTO playlist = 1; // revision updated.
+  repeated PlaylistSongDTO songs = 2; // the whole playlist after the move, in order.
+}
+
+// Fetches one playlist with its songs.
+message GetPlaylistRequest {
+  int64 playlist_id = 1; // Filled by the server; clients leave it unset.
+  int64 viewer_id = 2; // must be able to view the playlist.
+  string playlist_public_id = 3;
+  string viewer_public_id = 4; // the caller; must match the session.
+}
+
+// A playlist, its songs, and what the caller may do with them.
+message GetPlaylistResponse {
+  PlaylistDTO playlist = 1;
+  repeated PlaylistSongDTO songs = 2; // ordered by position.
+  // playlist#can_edit_songs for the viewer, so the app shows the add / move /
+  // remove controls only to those who may use them.
+  bool viewer_can_edit_songs = 3;
+}
+
+// The playlist to follow.
+message WatchPlaylistRequest {
+  int64 playlist_id = 1; // Filled by the server; clients leave it unset.
+  int64 viewer_id = 2; // Filled by the server; clients leave it unset.
+  string playlist_public_id = 3;
+  string viewer_public_id = 4; // the caller; may be omitted (taken from the session), must match it otherwise.
+}
+
+// One state of the playlist, the same fields as GetPlaylistResponse.
+message WatchPlaylistResponse {
+  PlaylistDTO playlist = 1;
+  repeated PlaylistSongDTO songs = 2; // ordered by position.
+  bool viewer_can_edit_songs = 3;
+}
+
+// Lists the playlists visible to the caller.
+message ListPlaylistsRequest {
+  int64 viewer_id = 1; // Filled by the server; clients leave it unset.
+  string viewer_public_id = 2; // the caller; must match the session.
+}
+
+// Every playlist the caller may view, newest first, without songs.
+message ListPlaylistsResponse {
+  repeated PlaylistDTO playlists = 1;
+}
+
+// The caller's library.
+message ListLibraryPlaylistsRequest {
+  int64 viewer_id = 1; // Filled by the server; clients leave it unset.
+  string viewer_public_id = 2; // the caller; must match the session.
+}
+
+// The caller's library, most recently changed first.
+message ListLibraryPlaylistsResponse {
+  repeated PlaylistListItemDTO playlists = 1;
+}
+
+// One page of public playlists matching a name.
+message SearchPublicPlaylistsRequest {
+  int64 viewer_id = 1; // Filled by the server; clients leave it unset.
+  string viewer_public_id = 2; // the caller; must match the session.
+  string query = 3; // part of the name, any case; empty = every public playlist.
+  int32 page_size = 4; // 1..100; 0 = 30.
+  string page_token = 5; // next_page_token of the previous page; empty = first page.
+  // Only playlists whose owner likes at least one genre the caller likes
+  // (music preferences), among owners who show theirs to everyone.
+  bool my_taste = 6;
+}
+
+// One page, newest first.
+message SearchPublicPlaylistsResponse {
+  repeated PlaylistListItemDTO playlists = 1;
+  string next_page_token = 2; // empty on the last page.
+}
+
+// Soft-deletes a playlist.
+message DeletePlaylistRequest {
+  int64 playlist_id = 1; // Filled by the server; clients leave it unset.
+  string playlist_public_id = 2;
+}
+
+// The deleted playlist.
+message DeletePlaylistResponse {
+  PlaylistDTO playlist = 1; // deleted_at now set.
+}
+
+// Transfers ownership to an existing member.
+message TransferPlaylistOwnershipRequest {
+  int64 playlist_id = 1; // Filled by the server; clients leave it unset.
+  int64 new_owner_user_id = 2; // must already be a member (any role but owner).
+  int64 current_owner_user_id = 3; // Filled by the server; clients leave it unset.
+  string playlist_public_id = 4;
+  string new_owner_user_public_id = 5; // must already be a member; not the caller.
+  string current_owner_user_public_id = 6; // the caller; must match the session.
+}
+
+// The playlist with its new owner.
+message TransferPlaylistOwnershipResponse {
+  PlaylistDTO playlist = 1; // owner_id updated.
+}
+
+// Invites a user to a playlist.
+// The playlist whose people to list.
+message ListPlaylistMembersRequest {
+  int64 playlist_id = 1; // Filled by the server; clients leave it unset.
+  int64 viewer_id = 2; // Filled by the server; clients leave it unset.
+  string playlist_public_id = 3;
+  string viewer_public_id = 4; // the caller; may be omitted (taken from the session), must match it otherwise.
+}
+
+// The playlist's members, owner first.
+message ListPlaylistMembersResponse {
+  repeated PlaylistMemberDTO members = 1;
+}
+
+message InviteToPlaylistRequest {
+  int64 playlist_id = 1; // Filled by the server; clients leave it unset.
+  int64 inviter_user_id = 2; // must be the owner, an admin or an editor.
+  int64 invitee_user_id = 3; // Filled by the server; clients leave it unset.
+  string playlist_public_id = 4;
+  string inviter_user_public_id = 5; // the caller; must match the session.
+  string invitee_user_public_id = 6; // the user to invite; must exist.
+}
+
+// Empty on success.
+message InviteToPlaylistResponse {}
+
+// Uploads a new playlist cover.
+message SetPlaylistCoverRequest {
+  int64 playlist_id = 1; // Filled by the server; clients leave it unset.
+  int64 user_id = 2; // must be the playlist's owner or an admin.
+  bytes image_data = 3; // raw image bytes (base64 in JSON), at most 5 MiB.
+  string content_type = 4; // image/png | image/jpeg | image/webp
+  string playlist_public_id = 5;
+  string user_public_id = 6; // the caller; must match the session.
+}
+
+// The playlist with its new cover.
+message SetPlaylistCoverResponse {
+  PlaylistDTO playlist = 1; // cover_storage_key points at the new thumbnail.
+}
+
+// Removes the playlist cover.
+message DeletePlaylistCoverRequest {
+  int64 playlist_id = 1; // Filled by the server; clients leave it unset.
+  int64 user_id = 2; // must be the playlist's owner or an admin.
+  string playlist_public_id = 3;
+  string user_public_id = 4; // the caller; must match the session.
+}
+
+// The playlist without a cover.
+message DeletePlaylistCoverResponse {
+  PlaylistDTO playlist = 1; // cover_storage_key empty.
+}
+
+// Asks for the change log after a known revision.
+message ListPlaylistOpsSinceRequest {
+  int64 playlist_id = 1; // Filled by the server; clients leave it unset.
+  int64 since_revision = 2; // exclusive: returns ops with revision > this value; 0 = full history.
+  int64 viewer_id = 3; // Filled by the server; clients leave it unset.
+  string playlist_public_id = 4;
+  string viewer_public_id = 5; // the caller; must match the session.
+}
+
+// The ops after since_revision, in increasing revision order.
+message ListPlaylistOpsSinceResponse {
+  repeated PlaylistOpDTO ops = 1;
+}

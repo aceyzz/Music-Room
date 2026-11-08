@@ -1,0 +1,296 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: music-room-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: music_room
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD manquant dans .env}
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d music_room"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # --- Redis -------------------------------------------------------------------------------
+  # DISABLED: the backend no longer connects to Redis (the client code in cmd/main.go is
+  # commented out), so nothing was stored in it. To bring it back, uncomment, in this file:
+  # this service, APP_REDIS_* and `redis:` under backend.depends_on, and `redis_data`
+  # under volumes; then the Redis lines in the Makefile and loadtest/compose.yaml.
+  # redis:
+  #   image: redis:7-alpine
+  #   container_name: music-room-redis
+  #   restart: unless-stopped
+  #   ports:
+  #     - "127.0.0.1:6379:6379"
+  #   command: ["redis-server", "--save", "60", "1", "--loglevel", "warning"]
+  #   volumes:
+  #     - redis_data:/data
+  #   healthcheck:
+  #     test: ["CMD", "redis-cli", "ping"]
+  #     interval: 5s
+  #     timeout: 3s
+  #     retries: 10
+
+  # --- OpenFGA -----------------------------------------------------------------------------
+  # Its own database, deliberately: FGA tuples are derived from the app's Postgres (see
+  # docs/annex/data-model.md §14), and sharing one instance would invite a join that hides the
+  # derivation. Its own password too (.env), so one leaked credential does not open both.
+  openfga-postgres:
+    image: postgres:16-alpine
+    container_name: music-room-openfga-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: openfga
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${OPENFGA_POSTGRES_PASSWORD:?OPENFGA_POSTGRES_PASSWORD manquant dans .env}
+    ports:
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - openfga_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d openfga"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # `openfga run` does not create its own schema; migration is a separate subcommand. Runs to
+  # completion on every `up` and is a no-op once applied.
+  # Pinned (and in step with FGA_IMAGE in the Makefile): the backend matches one of this
+  # server's error messages (conflictMarker, internal/authz/client.go), and the cache flags
+  # below are version-specific.
+  openfga-migrate:
+    image: openfga/openfga:v1.18.3
+    container_name: music-room-openfga-migrate
+    restart: on-failure
+    command: migrate
+    environment:
+      OPENFGA_DATASTORE_ENGINE: postgres
+      OPENFGA_DATASTORE_URI: postgres://postgres:${OPENFGA_POSTGRES_PASSWORD:?OPENFGA_POSTGRES_PASSWORD manquant dans .env}@openfga-postgres:5432/openfga?sslmode=disable
+    depends_on:
+      openfga-postgres:
+        condition: service_healthy
+
+  openfga:
+    image: openfga/openfga:v1.18.3
+    container_name: music-room-openfga
+    restart: unless-stopped
+    command: run
+    environment:
+      OPENFGA_DATASTORE_ENGINE: postgres
+      OPENFGA_DATASTORE_URI: postgres://postgres:${OPENFGA_POSTGRES_PASSWORD:?OPENFGA_POSTGRES_PASSWORD manquant dans .env}@openfga-postgres:5432/openfga?sslmode=disable
+      OPENFGA_LOG_FORMAT: json
+      # Check cache. Every request runs at least one Check and the app polls the same
+      # (user, object) every 5 s, so most checks repeat an answer OpenFGA computed seconds
+      # ago -- without this it was the first container to saturate (docs/annex/load-testing.md).
+      #
+      # The trade: Check becomes eventually consistent. A cached answer would survive a
+      # revocation for the full TTL, so the cache controller is on too: Checks look at the
+      # changelog (at most once per CONTROLLER_TTL) and drop entries older than the latest
+      # tuple write. Staleness is then ~1-2 s after a tuple lands, on top of the outbox lag
+      # that already exists (APP_OPENFGA_SYNC_INTERVAL_SECONDS: 1 s here, 15 s default).
+      #
+      # The cache key includes the request context, which is why the backend sends
+      # current_time only to permissions that read it, truncated to the minute
+      # (authz.NeedsRequestTime, authz.RequestTime): a per-second timestamp on every check
+      # would make every key unique. FGA_CHECK_CACHE=false turns all of it off.
+      OPENFGA_CHECK_QUERY_CACHE_ENABLED: ${FGA_CHECK_CACHE:-true}
+      OPENFGA_CHECK_ITERATOR_CACHE_ENABLED: ${FGA_CHECK_CACHE:-true}
+      OPENFGA_CACHE_CONTROLLER_ENABLED: ${FGA_CHECK_CACHE:-true}
+      OPENFGA_CACHE_CONTROLLER_TTL: ${FGA_CACHE_CONTROLLER_TTL:-1s}
+      OPENFGA_CHECK_QUERY_CACHE_TTL: ${FGA_CHECK_CACHE_TTL:-10s}
+      OPENFGA_CHECK_ITERATOR_CACHE_TTL: ${FGA_CHECK_CACHE_TTL:-10s}
+    ports:
+      # Host 8081 belongs to the backend's REST gateway (and tests/conftest.py
+      # defaults to it), so OpenFGA's gRPC port goes elsewhere. Nothing in this
+      # repo dials it: the Go SDK talks to the HTTP API below.
+      - "127.0.0.1:8083:8081"   # gRPC
+      - "127.0.0.1:8082:8080"   # HTTP  (host 8080 belongs to image-service)
+    depends_on:
+      openfga-migrate:
+        condition: service_completed_successfully
+    # The image is Chainguard static: no shell, no curl, so CMD-SHELL and wget healthchecks all
+    # fail. grpc_health_probe ships in the image for exactly this.
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/grpc_health_probe", "-addr=localhost:8081"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # Pushes authz/model.fga into a store at a fixed ID, then exits. Re-runnable: `make fga-model`.
+  #
+  # The ID is a hardcoded ULID so backend config can be static instead of discovering the store
+  # at boot. Two consequences, both accepted:
+  #   - `store import --store-id` does not create a `stores` row, so GetStore 404s and
+  #     ListStores is empty. Write/Check against the ID work correctly; the store is invisible
+  #     to the store registry only.
+  #   - Authorization models are immutable and versioned, so every run appends a new version.
+  #     The backend pins the latest at boot (authz.Client.Ping). Expected, not a leak.
+  # (ULIDs are Crockford base32, which has no I/L/O/U — hence "AVTHZ".)
+  openfga-init:
+    image: openfga/cli:v0.7.20
+    container_name: music-room-openfga-init
+    restart: on-failure
+    command: >
+      store import
+      --api-url http://openfga:8080
+      --store-id 01MRAVTHZ00000000000000000
+      --file /authz/store.yaml
+    volumes:
+      - ./authz:/authz:ro
+    depends_on:
+      openfga:
+        condition: service_healthy
+
+  backend:
+    build:
+      # The root, not ./backend: the image generates the gRPC and sqlc code
+      # from proto/ and buf.yaml, which live up here.
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: music-room-backend
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      APP_GRPC_ADDR: ":50051"
+      APP_HTTP_ADDR: ":8081"
+      APP_RATE_LIMIT_RPS: ${APP_RATE_LIMIT_RPS:-100}
+      APP_DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD manquant dans .env}@postgres:5432/music_room?sslmode=disable
+      # APP_REDIS_ADDR: redis:6379
+      # APP_REDIS_DB: "0"
+      APP_IMAGE_SERVICE_URL: http://image-service:8080
+      APP_IMAGE_STORAGE_DIR: /data/images
+      # Sans ces deux-la, le backend tombe sur les valeurs par defaut
+      # (localhost:8082), qui ne designent rien depuis un conteneur, et refuse de
+      # demarrer -- volontairement : une ecriture de tuple qui part dans le vide
+      # est invisible, et le premier symptome serait une permission refusee sans
+      # raison, bien plus tard.
+      APP_OPENFGA_API_URL: http://openfga:8080
+      APP_OPENFGA_STORE_ID: "01MRAVTHZ00000000000000000"
+      # 1s au lieu des 15s par defaut : la suite pytest (tests/) ecrit via la
+      # vraie API (block, invite, grant...) puis verifie une permission qui
+      # depend de la tuple que ca vient d'enqueuer dans l'outbox -- a 15s
+      # d'intervalle, ces tests attendraient inutilement longtemps ou
+      # deviendraient flaky. Local/test uniquement, ce fichier n'est pas ce
+      # qui tourne en prod.
+      APP_OPENFGA_SYNC_INTERVAL_SECONDS: "1"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      # redis:
+      #   condition: service_healthy
+      image-service:
+        condition: service_started
+      # Pas openfga mais openfga-init : le serveur peut etre sain avec un store
+      # vide, et un store sans modele d'autorisation repond a chaque Check par
+      # une erreur confuse plutot que par un refus. Ping() le verifie au boot,
+      # donc attendre l'import evite un echec de demarrage en course.
+      openfga-init:
+        condition: service_completed_successfully
+    ports:
+      - "50051:50051"
+      - "8081:8081"
+    volumes:
+      - image_data:/data/images
+
+  # --- Phones (make phone / make phone-2) -----------------------------------------------
+  # The Music Room Linux app on a phone-sized virtual screen, shown in a browser through noVNC:
+  # http://localhost:6080 and :6081 (frontend/Dockerfile, target phone). Not an Android
+  # emulator: the evaluation machines have no /dev/kvm, and an x86_64 emulator does not boot
+  # without it. The Linux build runs the same native gRPC code as the Android one.
+  # Only under a profile, so `docker compose up` (make all) neither builds nor starts them.
+  # Two services on one image: two accounts side by side, the collaboration demo. They reach
+  # the backend by its service name (BACKEND_HOST=backend, baked in at build time).
+  phone: &phone
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+      target: phone
+      args:
+        # "Continue with 42 / Google" (public IDs; the secrets stay with the
+        # backend). Read from the root .env, like the backend's APP_OAUTH_* values.
+        OAUTH_INTRA42_CLIENT_ID: ${APP_OAUTH_INTRA42_CLIENT_ID:-}
+        OAUTH_GOOGLE_CLIENT_ID: ${APP_OAUTH_GOOGLE_CLIENT_ID:-}
+    image: music-room-phone
+    container_name: music-room-phone
+    # Its name, as a computer's: the app names the device after it ("Where
+    # the music plays"). A container is otherwise named by a random id.
+    hostname: phone-1
+    profiles: ["phone"]
+    # A container runs in UTC; a real phone shows its own zone. The demo is
+    # shown at 42: Paris time, so times read as on the evaluator's phone.
+    # PHONE_TZ=America/New_York make phone for another one.
+    environment:
+      TZ: ${PHONE_TZ:-Europe/Paris}
+    # No photos on a virtual phone: this folder is its Pictures, for the
+    # profile picture's "Choose from library". Drop your own in it; read-only.
+    # The keyring is the phone's memory: the install's device id and the
+    # session token live there, so a rebuild (make) is an app update, not a
+    # new phone; make fclean wipes it, as a factory reset.
+    volumes:
+      - ./frontend/phone/pictures:/root/Pictures:ro
+      - phone_keyring:/root/.local/share/keyrings
+    ports:
+      - "127.0.0.1:6080:6080"
+      - "127.0.0.1:6090:6090" # its sound (frontend/phone/sound.js)
+      - "127.0.0.1:6100:6100" # its position, set with the 📍 button (frontend/phone/position.js)
+
+  phone-2:
+    <<: *phone
+    container_name: music-room-phone-2
+    hostname: phone-2
+    profiles: ["phone2"]
+    volumes:
+      - ./frontend/phone/pictures:/root/Pictures:ro
+      - phone2_keyring:/root/.local/share/keyrings
+    ports:
+      - "127.0.0.1:6081:6080"
+      - "127.0.0.1:6091:6090"
+      - "127.0.0.1:6101:6100"
+
+  # --- Android emulator (make android) ---------------------------------------------------
+  # The real Android app (make apk's APK) on an emulator, in a browser through noVNC:
+  # http://localhost:6082. Needs /dev/kvm, so not on the evaluation machines: on a Linux
+  # laptop with hardware virtualisation, to show that the Android build works too. Under its
+  # own profile, so `make` never starts it. The APK reaches the backend at the machine's LAN
+  # address it was built with (make apk), through the ports published above.
+  android:
+    image: budtmo/docker-android:emulator_14.0_v3.7.0-p1
+    container_name: music-room-android
+    profiles: ["android"]
+    devices:
+      - /dev/kvm
+    environment:
+      EMULATOR_DEVICE: "Samsung Galaxy S10"
+      WEB_VNC: "true"
+    ports:
+      - "127.0.0.1:6082:6080"
+
+  image-service:
+    build:
+      context: ./image-service
+      dockerfile: Dockerfile
+    container_name: music-room-image-service
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8080:8080"
+
+volumes:
+  postgres_data:
+  # Each phone's keyring (see the phone service).
+  phone_keyring:
+  phone2_keyring:
+  # redis_data:
+  image_data:
+  # OpenFGA keeps its store and tuples in its own Postgres, deliberately separate
+  # from the app's: they have different backup and retention needs, and the
+  # permission graph is derived data that must never be restored out of step with
+  # the rows it describes.
+  openfga_postgres_data:

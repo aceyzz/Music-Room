@@ -1,0 +1,3 @@
+#include "Generated.xcconfig"
+#include? "Local.xcconfig"
+PRODUCT_BUNDLE_IDENTIFIER = com.musicroom.default

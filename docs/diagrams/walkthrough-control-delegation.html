@@ -1,0 +1,324 @@
+<!doctype html>
+<html lang="en" style="color-scheme: dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Control Delegation · Music Room</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+  tailwind.config = {
+    theme: { extend: { colors: {
+      wt: {
+        bg: '#000000', surface: '#0a0a0a', raised: '#141414',
+        border: '#2a2a2a', fg: '#ffffff', muted: '#a0a0a0',
+        accent: '#a855f7', file: '#c084fc', red: '#ef4444',
+      },
+    }}},
+  };
+</script>
+<script crossorigin src="https://unpkg.com/react@18.3.1/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js"></script>
+<style>
+  html, body { background: #000; color: #fff; margin: 0; overflow: hidden; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Inter, sans-serif; }
+  .mermaid-wrap svg { max-width: none !important; height: auto !important; }
+  .mermaid-wrap .node { cursor: pointer; }
+  .mermaid-wrap .node:hover rect,
+  .mermaid-wrap .node:hover polygon,
+  .mermaid-wrap .node:hover circle,
+  .mermaid-wrap .node:hover .label-container { filter: brightness(1.3); transition: filter .15s; }
+  .mermaid-wrap .wt-entity { cursor: pointer; }
+  .mermaid-wrap .wt-entity:hover { filter: brightness(1.3); transition: filter .15s; }
+  .dt-body p { color:#a0a0a0; font-size:.88rem; line-height:1.65; margin-bottom:10px; }
+  .dt-body .shiki, .dt-body pre.code-fallback {
+    background: #000000; border: 1px solid #2a2a2a; border-radius: 8px;
+    padding: 14px 16px; overflow-x: auto; margin: 8px 0 14px;
+  }
+  .dt-body .shiki { background: #000000 !important; }
+  .dt-body .shiki code, .dt-body pre.code-fallback code {
+    font-family: 'SF Mono','Fira Code',monospace; font-size: .78rem; line-height: 1.55;
+    background: none; padding: 0; border-radius: 0;
+  }
+  .dt-body .shiki code { color: inherit; }
+  .dt-body pre.code-fallback code { color: #e0e0e0; }
+  kbd { font-family: inherit; }
+</style>
+</head>
+<body class="bg-wt-bg">
+<div id="root"></div>
+<script type="module">
+let createHighlighter = null;
+try {
+  ({ createHighlighter } = await import('https://cdn.jsdelivr.net/npm/shiki@3.22.0/+esm'));
+} catch (e) { console.warn('Shiki unavailable:', e); }
+
+const { useState, useEffect, useRef, useCallback } = React;
+const h = React.createElement;
+
+const DATA = {"title": "Control Delegation", "subtitle": "Letting a friend drive the event's speaker for one event", "kind": "flow", "summary": "Each phone registers itself as a device; during an event the host's phone becomes the speaker the first time the host plays.\nThe host can give a friend a licence for one event on that speaker device, and that friend can then play, pause and skip like the host.\nLicences are SQL rows, not OpenFGA tuples; unfriending or blocking revokes them, and every change instantly flips the friend's controls through WatchEvent.", "diagram": "\ngraph TD\n    subgraph app[\"Phone App\"]\n        deviceRegister[\"Device Registration\"]\n        delegatesUi[\"Delegates Screen\"]\n    end\n    subgraph api[\"API and Rules\"]\n        delegationRpcs[\"DelegationService RPCs\"]\n        delegationPolicy[\"Interceptor Rules\"]\n    end\n    subgraph logic[\"Logic\"]\n        delegationService[\"Grant and Revoke\"]\n        delegationRepo[\"Devices and Speaker\"]\n        canControl[\"Can Control Playback\"]\n        unfriendCascade[\"Unfriend Revokes Grants\"]\n    end\n    subgraph db[\"Database\"]\n        delegationSql[(\"Licence Queries\")]\n        licenceSchema[(\"Licence Table\")]\n    end\n    deviceRegister -->|\"RegisterDevice\"| delegationRpcs\n    delegatesUi -->|\"grant and revoke\"| delegationRpcs\n    delegationRpcs -->|\"checked by\"| delegationPolicy\n    delegationPolicy -->|\"lets through to\"| delegationService\n    delegationPolicy -->|\"lets through to\"| delegationRepo\n    delegationService -->|\"friends only, inserts\"| delegationSql\n    delegationRepo -->|\"moves licences with speaker\"| delegationSql\n    canControl -->|\"looks up live licence\"| delegationSql\n    unfriendCascade -->|\"revokes both ways\"| delegationSql\n    delegationSql -->|\"reads and writes\"| licenceSchema\n    delegationService ==>|\"publish event change\"| delegatesUi\n    classDef component fill:#a855f7,stroke:#c084fc,color:#fff\n    classDef composable fill:#7c3aed,stroke:#a78bfa,color:#fff\n    classDef utility fill:#6d28d9,stroke:#8b5cf6,color:#fff\n    classDef external fill:#525252,stroke:#737373,color:#fff\n    classDef event fill:#d8b4fe,stroke:#e9d5ff,color:#000\n    classDef data fill:#9333ea,stroke:#a855f7,color:#fff\n    class deviceRegister component\n    click deviceRegister nodeClickHandler \"View details\"\n    class delegatesUi component\n    click delegatesUi nodeClickHandler \"View details\"\n    class delegationRpcs composable\n    click delegationRpcs nodeClickHandler \"View details\"\n    class delegationPolicy utility\n    click delegationPolicy nodeClickHandler \"View details\"\n    class delegationService composable\n    click delegationService nodeClickHandler \"View details\"\n    class delegationRepo composable\n    click delegationRepo nodeClickHandler \"View details\"\n    class canControl composable\n    click canControl nodeClickHandler \"View details\"\n    class unfriendCascade utility\n    click unfriendCascade nodeClickHandler \"View details\"\n    class delegationSql data\n    click delegationSql nodeClickHandler \"View details\"\n    class licenceSchema data\n    click licenceSchema nodeClickHandler \"View details\"\n", "nodes": {"deviceRegister": {"title": "Device Registration (app)", "type": "component", "description": "A global store calls RegisterDevice once per session, with an id kept in secure storage across logouts. The server attaches the session to that device, so later calls know which phone they come from.", "files": ["frontend/app/lib/features/device/presentation/stores/device_store.dart"], "code": "  void start() {\n    _session.state.addListener(_onSession);\n    _onSession();\n  }", "lang": "dart"}, "delegatesUi": {"title": "Delegates Screen (app)", "type": "component", "description": "On the event's music controls, the host picks friends to grant or revoke. A delegate's controls appear or disappear as soon as the next WatchEvent push says viewer_can_control.", "files": ["frontend/app/lib/features/device/presentation/stores/event_delegates_store.dart"], "code": "      await _delegation.revoke(_devicePublicId, licenseId);", "lang": "dart"}, "delegationRpcs": {"title": "DelegationService RPCs", "type": "composable", "description": "RegisterDevice, ListMyDevices, GrantDeviceControl, RevokeDeviceControl, ListDeviceControlLicenses and SetEventSpeaker.", "files": ["proto/music_room/v1/services/delegation_service.proto"], "code": "  rpc GrantDeviceControl(GrantDeviceControlRequest) returns (GrantDeviceControlResponse) {\n  rpc SetEventSpeaker(SetEventSpeakerRequest) returns (SetEventSpeakerResponse) {", "lang": "proto"}, "delegationPolicy": {"title": "Interceptor Rules", "type": "utility", "description": "Granting needs device#can_grant_control (only the owner) and an event, because a licence is always for one event. Changing the speaker needs event#can_change_settings.", "files": ["backend/internal/interceptor/policy.go"], "code": "\t\t\t// Required: a licence is for one event, never for every one (00021).\n\t\t\t{Type: authz.TypeEvent, IDField: \"event_public_id\", Resolve: true, NotFound: true},", "lang": "go"}, "delegationService": {"title": "Grant and Revoke", "type": "composable", "description": "Checks the grantee is a friend, inserts the licence (a duplicate is AlreadyExists) and publishes the event topic. Revoking sets revoked_at instead of deleting, which keeps an audit trail.", "files": ["backend/internal/delegation/service.go"], "code": "\tif !areFriends {\n\t\treturn nil, status.Error(codes.PermissionDenied, \"device control can only be delegated to a friend\")\n\t}", "lang": "go"}, "delegationRepo": {"title": "Devices and Speaker", "type": "composable", "description": "RegisterDevice upserts the device and writes its owner tuple through the outbox. SetEventSpeaker moves the event's licences from the old speaker device to the new one in one transaction.", "files": ["backend/internal/delegation/repository.go"], "code": "\t\tchange := authz.NewDevice(device.PublicID.String(), ownerPublicID.String())", "lang": "go"}, "canControl": {"title": "Can Control Playback", "type": "composable", "description": "Used by play, pause, seek and skip: the host always may; anyone else needs a live licence for this event on the speaker device. With no speaker yet, only the host can control.", "files": ["backend/internal/event/access.go"], "code": "\tif event.HostID == userID {\n\t\treturn true, nil\n\t}", "lang": "go"}, "unfriendCascade": {"title": "Unfriend Revokes Grants", "type": "utility", "description": "Friendship is only checked when a licence is granted, so Unfriend and Block revoke every live grant between the two users, in both directions, in the same transaction.", "files": ["backend/internal/user/repository.go"], "code": "\treturn queries.RevokeDeviceGrantsBetween(ctx, sqlc.RevokeDeviceGrantsBetweenParams{", "lang": "go"}, "delegationSql": {"title": "Licence Queries", "type": "data", "description": "ResolveDeviceControlLicense finds a live, unexpired licence for exactly this device, friend and event. The others grant, revoke, list and move licences.", "files": ["backend/db/query/delegation.sql"], "code": "  AND revoked_at IS NULL\n  AND (expires_at IS NULL OR expires_at > NOW())", "lang": "sql"}, "licenceSchema": {"title": "Licence Table", "type": "data", "description": "device_control_licenses allows one live licence per (device, friend, event). Migration 00021 made the event required and 00023 dropped the per-action flags, so one licence means the whole player.", "files": ["backend/db/schema/00013_delegation.sql", "backend/db/schema/00021_no_standing_grants.sql", "backend/db/schema/00023_single_control_licence.sql"], "code": "CREATE UNIQUE INDEX device_control_licenses_one_live_per_scope\n    ON device_control_licenses (device_id, grantee_user_id, COALESCE(event_id, 0))\n    WHERE revoked_at IS NULL;", "lang": "sql"}}, "legend": [{"label": "Entry point / UI", "color": "#a855f7"}, {"label": "Logic / Service", "color": "#7c3aed"}, {"label": "Helper", "color": "#6d28d9"}, {"label": "Data / State", "color": "#9333ea"}], "pages": [{"slug": "overview", "title": "Music Room: System Overview"}, {"slug": "backend", "title": "Backend Architecture"}, {"slug": "request-pipeline", "title": "Request Pipeline"}, {"slug": "openfga", "title": "OpenFGA Permission Service"}, {"slug": "auth", "title": "Auth and Sessions"}, {"slug": "realtime", "title": "Realtime Updates"}, {"slug": "frontend", "title": "Frontend Architecture"}, {"slug": "track-vote", "title": "Track Vote Events"}, {"slug": "playlist-editor", "title": "Playlist Editor"}, {"slug": "control-delegation", "title": "Control Delegation"}, {"slug": "data-model", "title": "Data Model"}], "slug": "control-delegation"};
+const { title: TITLE, subtitle: SUBTITLE, kind: KIND, summary: SUMMARY,
+        diagram: DIAGRAM, nodes: NODES, legend: LEGEND, pages: PAGES, slug: SLUG } = DATA;
+
+// Pre-highlight every snippet once; the panel falls back to plain <pre> if Shiki fails.
+const langs = [...new Set(Object.values(NODES).map(n => n.lang).filter(l => l && l !== 'text'))];
+let highlighter = null;
+if (createHighlighter) {
+  try { highlighter = await createHighlighter({ themes: ['vitesse-dark'], langs }); }
+  catch (e) { console.warn('Shiki failed:', e); }
+}
+const HIGHLIGHTED = {};
+for (const [id, node] of Object.entries(NODES)) {
+  if (node.code && highlighter) {
+    try { HIGHLIGHTED[id] = highlighter.codeToHtml(node.code, { lang: node.lang, theme: 'vitesse-dark' }); }
+    catch (e) { console.warn(`Highlight failed for ${id}:`, e); }
+  }
+}
+
+const MERMAID_THEME = {
+  primaryColor: '#0a0a0a', primaryTextColor: '#ffffff', primaryBorderColor: '#2a2a2a',
+  lineColor: '#a0a0a0', background: '#000000',
+};
+const MERMAID_CONFIG = KIND === 'er'
+  ? {
+      startOnLoad: false, theme: 'dark', securityLevel: 'loose',
+      themeVariables: {
+        ...MERMAID_THEME,
+        entityBkg: '#0a0a0a', entityBorder: '#7c3aed', entityTextColor: '#ffffff',
+        attributeBackgroundColorEven: '#0a0a0a', attributeBackgroundColorOdd: '#141414',
+        labelColor: '#a0a0a0', relationColor: '#a855f7',
+      },
+      er: { useMaxWidth: false, layoutDirection: 'TB' },
+    }
+  : {
+      startOnLoad: false, theme: 'dark', securityLevel: 'loose',
+      themeVariables: {
+        ...MERMAID_THEME,
+        secondaryColor: '#000000', tertiaryColor: '#000000',
+        mainBkg: '#0a0a0a', nodeBorder: '#2a2a2a',
+        clusterBkg: 'rgba(10,10,10,0.8)', clusterBorder: '#7c3aed',
+        titleColor: '#ffffff', edgeLabelBackground: 'transparent',
+      },
+      flowchart: { useMaxWidth: false, htmlLabels: true, curve: 'basis' },
+    };
+
+// The SVG group that draws a node: flowchart ids look like "flowchart-<id>-<n>",
+// ER groups are tagged by attachEntityClicks below.
+function nodeElement(root, nodeId) {
+  if (KIND === 'er') return root.querySelector(`[data-entity="${nodeId}"]`);
+  const re = new RegExp(`^flowchart-${nodeId}-\\d+$`);
+  return [...root.querySelectorAll('.node')].find(n => re.test(n.id)) || null;
+}
+function allNodeElements(root) {
+  return root.querySelectorAll(KIND === 'er' ? '[data-entity]' : '.node');
+}
+
+// ER entities take no `click` directive: find each entity's group and bind it by hand.
+function attachEntityClicks(root, onClick) {
+  for (const name of Object.keys(NODES)) {
+    let group = root.querySelector(`g[id^="entity-${name}-"], g[id="entity-${name}"]`);
+    if (!group) {
+      const label = [...root.querySelectorAll('text, span, div, p')]
+        .find(el => el.textContent.trim() === name);
+      group = label && (label.closest('g.node') || label.closest('g'));
+    }
+    if (!group) { console.warn('entity not found:', name); continue; }
+    group.dataset.entity = name;
+    group.classList.add('wt-entity');
+    group.addEventListener('click', () => onClick(name));
+  }
+}
+
+function usePanZoom() {
+  const viewportRef = useRef(null), canvasRef = useRef(null), zoomDisplayRef = useRef(null);
+  const st = useRef({ zoom: 1, panX: 0, panY: 0 });
+  const drag = useRef({ on: false, lx: 0, ly: 0 });
+
+  const apply = useCallback(() => {
+    const { zoom, panX, panY } = st.current;
+    if (canvasRef.current) canvasRef.current.style.transform = `translate(${panX}px,${panY}px) scale(${zoom})`;
+    if (zoomDisplayRef.current) zoomDisplayRef.current.textContent = Math.round(zoom * 100) + '%';
+  }, []);
+
+  const fitToScreen = useCallback(() => {
+    const svg = canvasRef.current?.querySelector('svg');
+    const vp = viewportRef.current;
+    if (!svg || !vp) return;
+    const s = st.current;
+    const vw = vp.clientWidth, vh = vp.clientHeight;
+    const sw = canvasRef.current.getBoundingClientRect().width / s.zoom;
+    const sh = canvasRef.current.getBoundingClientRect().height / s.zoom;
+    const fit = Math.max(0.15, Math.min(2, Math.min((vw - 40) / sw, (vh - 40) / sh)));
+    s.zoom = fit; s.panX = (vw - sw * fit) / 2; s.panY = (vh - sh * fit) / 2;
+    apply();
+  }, [apply]);
+
+  useEffect(() => {
+    const vp = viewportRef.current;
+    if (!vp) return;
+    const onWheel = (e) => {
+      e.preventDefault();
+      const r = vp.getBoundingClientRect();
+      const mx = e.clientX - r.left, my = e.clientY - r.top, s = st.current;
+      const f = e.deltaY < 0 ? 1.12 : 1 / 1.12;
+      const nz = Math.min(4, Math.max(0.15, s.zoom * f)), sc = nz / s.zoom;
+      s.panX = mx - sc * (mx - s.panX); s.panY = my - sc * (my - s.panY); s.zoom = nz;
+      apply();
+    };
+    const onDown = (e) => {
+      if (e.target.closest('.node, .wt-entity')) return;
+      drag.current = { on: true, lx: e.clientX, ly: e.clientY };
+      vp.setPointerCapture(e.pointerId);
+    };
+    const onMove = (e) => {
+      const d = drag.current; if (!d.on) return;
+      st.current.panX += e.clientX - d.lx; st.current.panY += e.clientY - d.ly;
+      d.lx = e.clientX; d.ly = e.clientY; apply();
+    };
+    const onUp = () => { drag.current.on = false; };
+    vp.addEventListener('wheel', onWheel, { passive: false });
+    vp.addEventListener('pointerdown', onDown);
+    vp.addEventListener('pointermove', onMove);
+    vp.addEventListener('pointerup', onUp);
+    vp.addEventListener('pointercancel', onUp);
+    window.addEventListener('resize', fitToScreen);
+    return () => {
+      vp.removeEventListener('wheel', onWheel);
+      vp.removeEventListener('pointerdown', onDown);
+      vp.removeEventListener('pointermove', onMove);
+      vp.removeEventListener('pointerup', onUp);
+      vp.removeEventListener('pointercancel', onUp);
+      window.removeEventListener('resize', fitToScreen);
+    };
+  }, [apply, fitToScreen]);
+
+  const zoomIn = useCallback(() => { st.current.zoom = Math.min(4, st.current.zoom * 1.25); apply(); }, [apply]);
+  const zoomOut = useCallback(() => { st.current.zoom = Math.max(0.15, st.current.zoom / 1.25); apply(); }, [apply]);
+  return { viewportRef, canvasRef, zoomDisplayRef, zoomIn, zoomOut, fitToScreen };
+}
+
+function MermaidDiagram({ onNodeClick, onRendered }) {
+  const ref = useRef(null);
+  useEffect(() => {
+    window.nodeClickHandler = onNodeClick;
+    mermaid.initialize(MERMAID_CONFIG);
+    mermaid.render('walkthrough-diagram', DIAGRAM).then(({ svg, bindFunctions }) => {
+      if (!ref.current) return;
+      ref.current.innerHTML = svg;
+      bindFunctions?.(ref.current);
+      if (KIND === 'er') attachEntityClicks(ref.current, onNodeClick);
+      document.body.dataset.rendered = 'true';
+      onRendered();
+    }).catch((e) => {
+      console.error('Mermaid render failed:', e);
+      document.body.dataset.rendered = 'error';
+      if (ref.current) ref.current.textContent = 'Diagram failed to render: ' + e.message;
+    });
+    return () => { delete window.nodeClickHandler; };
+  }, [onNodeClick, onRendered]);
+  return h('div', { ref, className: 'mermaid-wrap' });
+}
+
+function Summary({ collapsed, onToggle }) {
+  if (collapsed) {
+    return h('div', {
+      onClick: onToggle,
+      className: 'fixed top-16 left-6 z-10 px-3 py-1.5 bg-wt-surface/60 backdrop-blur border border-wt-border rounded-full shadow-lg cursor-pointer hover:bg-wt-surface/80 transition-all duration-300',
+    }, h('span', { className: 'text-xs text-wt-muted font-medium' }, 'ℹ︎ Summary'));
+  }
+  return h('div', {
+    onClick: onToggle,
+    className: 'fixed top-16 left-6 z-10 max-w-lg px-4 py-3 bg-wt-surface/80 backdrop-blur border border-wt-border rounded-lg shadow-lg cursor-pointer transition-all duration-300',
+  },
+    h('p', { className: 'text-sm text-wt-muted leading-relaxed' }, SUMMARY),
+    h('p', { className: 'text-[0.65rem] text-wt-muted/50 mt-1.5' }, 'Click to dismiss'));
+}
+
+function DetailPanel({ nodeId, node, onClose }) {
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === 'Escape') onClose(); };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [onClose]);
+  const codeHtml = HIGHLIGHTED[nodeId];
+  return h('div', {
+    className: 'fixed top-4 right-4 bottom-4 w-[560px] max-w-[calc(100vw-2rem)] z-30 bg-wt-surface border border-wt-border rounded-xl shadow-2xl flex flex-col overflow-hidden',
+  },
+    h('button', {
+      onClick: onClose,
+      className: 'absolute top-3 right-3 z-10 w-7 h-7 rounded-md border border-wt-border bg-wt-raised text-wt-muted flex items-center justify-center text-lg hover:bg-wt-red hover:border-wt-red hover:text-white transition-colors',
+    }, '×'),
+    h('div', { className: 'flex-1 overflow-y-auto p-5' },
+      h('h2', { className: 'text-lg font-bold text-wt-fg mb-3 pr-9' }, node.title),
+      h('div', { className: 'dt-body' }, h('p', null, node.description)),
+      h('div', { className: 'dt-body' },
+        codeHtml
+          ? h('div', { dangerouslySetInnerHTML: { __html: codeHtml } })
+          : h('pre', { className: 'code-fallback' }, h('code', null, node.code))),
+      h('div', { className: 'mt-4 pt-3 border-t border-wt-border' },
+        h('div', { className: 'text-[0.7rem] uppercase tracking-wider text-wt-muted font-semibold mb-1.5' }, 'Files'),
+        h('code', { className: 'text-sm text-wt-file font-mono leading-relaxed break-all' },
+          node.files.map((f, i) => h('span', { key: i }, f, h('br'))))))
+  );
+}
+
+function ZoomControls({ zoomDisplayRef, onZoomIn, onZoomOut, onFit }) {
+  const btn = 'w-8 h-8 rounded-md border border-wt-border bg-wt-surface text-wt-muted hover:bg-wt-raised hover:text-wt-fg transition-colors text-sm';
+  return h('div', { className: 'fixed bottom-5 left-5 z-20 flex items-center gap-1.5' },
+    h('button', { className: btn, onClick: onZoomOut, title: 'Zoom out' }, '−'),
+    h('span', { ref: zoomDisplayRef, className: 'w-12 text-center text-xs text-wt-muted tabular-nums' }, '100%'),
+    h('button', { className: btn, onClick: onZoomIn, title: 'Zoom in' }, '+'),
+    h('button', { className: btn + ' w-auto px-2.5', onClick: onFit, title: 'Fit to screen' }, 'Fit'));
+}
+
+// Jump between the walkthroughs of this folder.
+function PageNav() {
+  return h('div', { className: 'fixed top-3.5 right-5 z-20' },
+    h('select', {
+      value: SLUG,
+      onChange: (e) => { window.location.href = `walkthrough-${e.target.value}.html`; },
+      className: 'bg-wt-surface border border-wt-border rounded-md text-xs text-wt-muted px-2 py-1.5 cursor-pointer',
+      'aria-label': 'Other walkthroughs',
+    }, PAGES.map(p => h('option', { key: p.slug, value: p.slug }, p.title))));
+}
+
+function App() {
+  const [activeId, setActiveId] = useState(null);
+  const [summaryCollapsed, setSummaryCollapsed] = useState(true);
+  const pz = usePanZoom();
+
+  const setActiveNode = useCallback((nodeId) => {
+    setActiveId(nodeId);
+    const root = document.querySelector('.mermaid-wrap');
+    allNodeElements(root).forEach(n => { n.style.opacity = nodeId ? '0.4' : '1'; });
+    const el = nodeId && nodeElement(root, nodeId);
+    if (el) el.style.opacity = '1';
+  }, []);
+  const closeDetail = useCallback(() => {
+    setActiveId(null);
+    allNodeElements(document.querySelector('.mermaid-wrap')).forEach(n => { n.style.opacity = '1'; });
+  }, []);
+  const onRendered = useCallback(() => { setTimeout(pz.fitToScreen, 50); }, [pz.fitToScreen]);
+
+  return h(React.Fragment, null,
+    h('header', { className: 'fixed top-0 inset-x-0 z-10 px-6 py-3.5 bg-gradient-to-b from-wt-bg to-transparent pointer-events-none' },
+      h('h1', { className: 'text-base font-semibold text-wt-fg' }, TITLE),
+      h('p', { className: 'text-sm text-wt-muted mt-0.5' }, SUBTITLE)),
+    h(Summary, { collapsed: summaryCollapsed, onToggle: () => setSummaryCollapsed(c => !c) }),
+    h('div', { ref: pz.viewportRef, className: 'w-full h-screen overflow-hidden cursor-grab active:cursor-grabbing' },
+      h('div', { ref: pz.canvasRef, className: 'origin-top-left will-change-transform inline-block p-[80px_60px_60px]' },
+        h(MermaidDiagram, { onNodeClick: setActiveNode, onRendered }))),
+    h(ZoomControls, { zoomDisplayRef: pz.zoomDisplayRef, onZoomIn: pz.zoomIn, onZoomOut: pz.zoomOut, onFit: pz.fitToScreen }),
+    h('div', { className: 'fixed bottom-5 left-1/2 -translate-x-1/2 z-20 flex flex-wrap justify-center gap-4 px-4 py-2 bg-wt-surface border border-wt-border rounded-lg shadow-xl' },
+      LEGEND.map(l => h('span', { key: l.label, className: 'flex items-center gap-1.5 text-xs text-wt-muted whitespace-nowrap' },
+        h('span', { className: 'w-2 h-2 rounded-full', style: { background: l.color } }), l.label))),
+    h(PageNav),
+    activeId && NODES[activeId] && h(DetailPanel, { nodeId: activeId, node: NODES[activeId], onClose: closeDetail }),
+    h('div', { className: 'fixed bottom-5 right-5 z-20 text-xs text-wt-muted opacity-50' },
+      h('kbd', null, 'Scroll'), ' zoom · ', h('kbd', null, 'Drag'), ' pan · Click nodes'));
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(h(App));
+</script>
+</body>
+</html>

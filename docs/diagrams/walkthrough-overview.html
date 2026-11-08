@@ -1,0 +1,324 @@
+<!doctype html>
+<html lang="en" style="color-scheme: dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Music Room: System Overview · Music Room</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+  tailwind.config = {
+    theme: { extend: { colors: {
+      wt: {
+        bg: '#000000', surface: '#0a0a0a', raised: '#141414',
+        border: '#2a2a2a', fg: '#ffffff', muted: '#a0a0a0',
+        accent: '#a855f7', file: '#c084fc', red: '#ef4444',
+      },
+    }}},
+  };
+</script>
+<script crossorigin src="https://unpkg.com/react@18.3.1/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js"></script>
+<style>
+  html, body { background: #000; color: #fff; margin: 0; overflow: hidden; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Inter, sans-serif; }
+  .mermaid-wrap svg { max-width: none !important; height: auto !important; }
+  .mermaid-wrap .node { cursor: pointer; }
+  .mermaid-wrap .node:hover rect,
+  .mermaid-wrap .node:hover polygon,
+  .mermaid-wrap .node:hover circle,
+  .mermaid-wrap .node:hover .label-container { filter: brightness(1.3); transition: filter .15s; }
+  .mermaid-wrap .wt-entity { cursor: pointer; }
+  .mermaid-wrap .wt-entity:hover { filter: brightness(1.3); transition: filter .15s; }
+  .dt-body p { color:#a0a0a0; font-size:.88rem; line-height:1.65; margin-bottom:10px; }
+  .dt-body .shiki, .dt-body pre.code-fallback {
+    background: #000000; border: 1px solid #2a2a2a; border-radius: 8px;
+    padding: 14px 16px; overflow-x: auto; margin: 8px 0 14px;
+  }
+  .dt-body .shiki { background: #000000 !important; }
+  .dt-body .shiki code, .dt-body pre.code-fallback code {
+    font-family: 'SF Mono','Fira Code',monospace; font-size: .78rem; line-height: 1.55;
+    background: none; padding: 0; border-radius: 0;
+  }
+  .dt-body .shiki code { color: inherit; }
+  .dt-body pre.code-fallback code { color: #e0e0e0; }
+  kbd { font-family: inherit; }
+</style>
+</head>
+<body class="bg-wt-bg">
+<div id="root"></div>
+<script type="module">
+let createHighlighter = null;
+try {
+  ({ createHighlighter } = await import('https://cdn.jsdelivr.net/npm/shiki@3.22.0/+esm'));
+} catch (e) { console.warn('Shiki unavailable:', e); }
+
+const { useState, useEffect, useRef, useCallback } = React;
+const h = React.createElement;
+
+const DATA = {"title": "Music Room: System Overview", "subtitle": "How the app, the backend and the services around it fit together", "kind": "flow", "summary": "The Flutter app talks to one Go backend over gRPC; the proto files are the contract both sides are generated from.\nEvery call goes through one interceptor that checks the session and asks OpenFGA for permission, then a domain service reads and writes Postgres.\nAfter each write the service signals an in-memory hub, which wakes the open Watch streams so every phone sees the change.", "diagram": "\ngraph LR\n    subgraph contract[\"Shared Contract\"]\n        protoContract[\"Proto API Contract\"]\n        bufCodegen[\"Code Generation\"]\n    end\n    subgraph client[\"Phone App\"]\n        flutterApp[\"Flutter App\"]\n    end\n    subgraph frontDoor[\"Front Door\"]\n        grpcServer[\"gRPC Server :50051\"]\n        restGateway[\"REST Gateway :8081\"]\n        interceptor[\"Permission Interceptor\"]\n    end\n    subgraph logic[\"Business Logic\"]\n        domainServices[\"Domain Services\"]\n        realtimeHub[\"Live Update Hub\"]\n    end\n    subgraph outside[\"Storage and Services\"]\n        postgres[(\"Postgres\")]\n        openfga[\"OpenFGA\"]\n        imageService[\"Image Resizer\"]\n        deezer[\"Deezer API\"]\n    end\n    protoContract -->|\"feeds\"| bufCodegen\n    bufCodegen -->|\"generates client for\"| flutterApp\n    bufCodegen -->|\"generates stubs for\"| grpcServer\n    flutterApp -->|\"calls\"| grpcServer\n    restGateway -->|\"forwards to\"| grpcServer\n    grpcServer -->|\"runs every call through\"| interceptor\n    interceptor -->|\"asks\"| openfga\n    interceptor -->|\"hands over to\"| domainServices\n    domainServices -->|\"reads and writes\"| postgres\n    domainServices -->|\"syncs tuples to\"| openfga\n    domainServices ==>|\"signals\"| realtimeHub\n    realtimeHub -.->|\"wakes streams of\"| flutterApp\n    domainServices -->|\"resizes images with\"| imageService\n    domainServices -->|\"searches songs on\"| deezer\n    classDef component fill:#a855f7,stroke:#c084fc,color:#fff\n    classDef composable fill:#7c3aed,stroke:#a78bfa,color:#fff\n    classDef utility fill:#6d28d9,stroke:#8b5cf6,color:#fff\n    classDef external fill:#525252,stroke:#737373,color:#fff\n    classDef event fill:#d8b4fe,stroke:#e9d5ff,color:#000\n    classDef data fill:#9333ea,stroke:#a855f7,color:#fff\n    class protoContract data\n    click protoContract nodeClickHandler \"View details\"\n    class bufCodegen utility\n    click bufCodegen nodeClickHandler \"View details\"\n    class flutterApp component\n    click flutterApp nodeClickHandler \"View details\"\n    class grpcServer composable\n    click grpcServer nodeClickHandler \"View details\"\n    class restGateway composable\n    click restGateway nodeClickHandler \"View details\"\n    class interceptor composable\n    click interceptor nodeClickHandler \"View details\"\n    class domainServices composable\n    click domainServices nodeClickHandler \"View details\"\n    class realtimeHub data\n    click realtimeHub nodeClickHandler \"View details\"\n    class postgres data\n    click postgres nodeClickHandler \"View details\"\n    class openfga external\n    click openfga nodeClickHandler \"View details\"\n    class imageService external\n    click imageService nodeClickHandler \"View details\"\n    class deezer external\n    click deezer nodeClickHandler \"View details\"\n", "nodes": {"protoContract": {"title": "Proto API Contract", "type": "data", "description": "The single source of truth for every RPC and message, under proto/music_room/v1. Seven service files (Auth, User, MusicProvider, Playlist, Event, Delegation, OpenAPI options) share one package.", "files": ["proto/music_room/v1/services/event_service.proto", "proto/music_room/v1/dto/"], "code": "  rpc WatchEvent(WatchEventRequest) returns (stream WatchEventResponse) {", "lang": "proto"}, "bufCodegen": {"title": "Code Generation (buf)", "type": "utility", "description": "One buf run turns the protos into Go structs, gRPC stubs and the REST gateway for the backend, Dart stubs for the app, and a Swagger spec. Generated folders are gitignored, so regenerate after any proto change.", "files": ["buf.gen.yaml", "buf.gen.backend.yaml", "buf.gen.frontend.yaml"], "code": "  - local: protoc-gen-grpc-gateway\n    out: backend/gen/go", "lang": "yaml"}, "flutterApp": {"title": "Flutter App", "type": "component", "description": "The client (Android APK, or the Linux build shown in a browser on eval machines). It opens one gRPC channel and calls the backend natively; live screens hold a Watch stream open.", "files": ["frontend/app/lib/main.dart"], "code": "  final device = await DeviceInfo.load();\n  await BackendAddress.load();\n  final appNetwork = await AppNetwork.connect(device: device);", "lang": "dart"}, "grpcServer": {"title": "gRPC Server", "type": "composable", "description": "The one server every request ends up on. Its interceptors are the only place permissions are enforced.", "files": ["backend/cmd/main.go"], "code": "\tgrpcServer := grpc.NewServer(\n\t\tgrpc.MaxRecvMsgSize(media.MaxUploadBytes+1<<20),\n\t\tgrpc.UnaryInterceptor(permissions.Unary()),\n\t\tgrpc.StreamInterceptor(permissions.Stream()),\n\t)", "lang": "go"}, "restGateway": {"title": "REST Gateway and HTTP Mux", "type": "composable", "description": "grpc-gateway turns REST/JSON into gRPC calls over loopback, so REST hits the same handlers and checks. The same mux serves Swagger at /docs/, images at /media/ and the OAuth callback page.", "files": ["backend/cmd/main.go"], "code": "\ttopMux.Handle(\"/docs/\", http.StripPrefix(\"/docs\", apidocs.Handler()))\n\ttopMux.Handle(\"/\", gwmux) // gRPC-Gateway REST routes", "lang": "go"}, "interceptor": {"title": "Permission Interceptor", "type": "composable", "description": "Looks up a policy per RPC (no entry means denied), authenticates the session token, runs the OpenFGA checks and swaps public UUIDs for internal ids. It also writes one activity log row per call.", "files": ["backend/internal/interceptor/interceptor.go", "backend/internal/interceptor/policy.go"], "code": "\t\"/music_room.v1.EventService/CastVote\": {\n\t\tCallerPublicIDField: \"user_public_id\",", "lang": "go"}, "domainServices": {"title": "Domain Services", "type": "composable", "description": "Six registered services: Auth, User, Playlist, Event, Delegation and MusicProvider. Each owns its SQL through sqlc and its business rules.", "files": ["backend/cmd/main.go", "backend/internal/playlist/", "backend/internal/event/", "backend/internal/delegation/"], "code": "\tpb.RegisterEventServiceServer(grpcServer, eventSvc)\n\tpb.RegisterDelegationServiceServer(grpcServer, delegation.NewService(pool, delegationRepo, liveUpdates))", "lang": "go"}, "realtimeHub": {"title": "Live Update Hub", "type": "data", "description": "An in-memory publish/subscribe of empty signals keyed by topic. A woken stream re-reads the full state itself, so the signal never carries stale data.", "files": ["backend/internal/realtime/hub.go"], "code": "func Playlist(id int64) Topic { return Topic(fmt.Sprintf(\"playlist:%d\", id)) }\nfunc Event(id int64) Topic    { return Topic(fmt.Sprintf(\"event:%d\", id)) }", "lang": "go"}, "postgres": {"title": "Postgres", "type": "data", "description": "The source of truth for everything. Migrations are embedded in the binary and applied on every boot.", "files": ["backend/db/embed.go", "backend/db/schema/", "backend/db/query/"], "code": "//go:embed schema/*.sql", "lang": "go"}, "openfga": {"title": "OpenFGA", "type": "external", "description": "A permission graph server with its own Postgres. Its tuples are derived from our rows and kept in sync through an outbox.", "files": ["authz/model.fga", "docker-compose.yaml"], "code": "    define can_edit_songs: owner or admin or editor or (can_view and open_edit)", "lang": "text"}, "imageService": {"title": "Image Resizer (Rust)", "type": "external", "description": "A tiny stateless axum service that resizes avatars and covers. The backend stores the files itself and serves them at /media/.", "files": ["image-service/src/main.rs", "backend/internal/media/client.go"], "code": "        .route(\"/resize\", post(resize))", "lang": "rust"}, "deezer": {"title": "Deezer API", "type": "external", "description": "The song catalogue. Tracks are cached in the songs table the first time a playlist or queue uses them.", "files": ["backend/internal/music_provider/deezer_client.go", "backend/internal/songs/service.go"], "code": "\tbaseURL := \"https://api.deezer.com\"", "lang": "go"}}, "legend": [{"label": "Data / State", "color": "#9333ea"}, {"label": "Helper", "color": "#6d28d9"}, {"label": "Entry point / UI", "color": "#a855f7"}, {"label": "Logic / Service", "color": "#7c3aed"}, {"label": "External system", "color": "#525252"}], "pages": [{"slug": "overview", "title": "Music Room: System Overview"}, {"slug": "backend", "title": "Backend Architecture"}, {"slug": "request-pipeline", "title": "Request Pipeline"}, {"slug": "openfga", "title": "OpenFGA Permission Service"}, {"slug": "auth", "title": "Auth and Sessions"}, {"slug": "realtime", "title": "Realtime Updates"}, {"slug": "frontend", "title": "Frontend Architecture"}, {"slug": "track-vote", "title": "Track Vote Events"}, {"slug": "playlist-editor", "title": "Playlist Editor"}, {"slug": "control-delegation", "title": "Control Delegation"}, {"slug": "data-model", "title": "Data Model"}], "slug": "overview"};
+const { title: TITLE, subtitle: SUBTITLE, kind: KIND, summary: SUMMARY,
+        diagram: DIAGRAM, nodes: NODES, legend: LEGEND, pages: PAGES, slug: SLUG } = DATA;
+
+// Pre-highlight every snippet once; the panel falls back to plain <pre> if Shiki fails.
+const langs = [...new Set(Object.values(NODES).map(n => n.lang).filter(l => l && l !== 'text'))];
+let highlighter = null;
+if (createHighlighter) {
+  try { highlighter = await createHighlighter({ themes: ['vitesse-dark'], langs }); }
+  catch (e) { console.warn('Shiki failed:', e); }
+}
+const HIGHLIGHTED = {};
+for (const [id, node] of Object.entries(NODES)) {
+  if (node.code && highlighter) {
+    try { HIGHLIGHTED[id] = highlighter.codeToHtml(node.code, { lang: node.lang, theme: 'vitesse-dark' }); }
+    catch (e) { console.warn(`Highlight failed for ${id}:`, e); }
+  }
+}
+
+const MERMAID_THEME = {
+  primaryColor: '#0a0a0a', primaryTextColor: '#ffffff', primaryBorderColor: '#2a2a2a',
+  lineColor: '#a0a0a0', background: '#000000',
+};
+const MERMAID_CONFIG = KIND === 'er'
+  ? {
+      startOnLoad: false, theme: 'dark', securityLevel: 'loose',
+      themeVariables: {
+        ...MERMAID_THEME,
+        entityBkg: '#0a0a0a', entityBorder: '#7c3aed', entityTextColor: '#ffffff',
+        attributeBackgroundColorEven: '#0a0a0a', attributeBackgroundColorOdd: '#141414',
+        labelColor: '#a0a0a0', relationColor: '#a855f7',
+      },
+      er: { useMaxWidth: false, layoutDirection: 'TB' },
+    }
+  : {
+      startOnLoad: false, theme: 'dark', securityLevel: 'loose',
+      themeVariables: {
+        ...MERMAID_THEME,
+        secondaryColor: '#000000', tertiaryColor: '#000000',
+        mainBkg: '#0a0a0a', nodeBorder: '#2a2a2a',
+        clusterBkg: 'rgba(10,10,10,0.8)', clusterBorder: '#7c3aed',
+        titleColor: '#ffffff', edgeLabelBackground: 'transparent',
+      },
+      flowchart: { useMaxWidth: false, htmlLabels: true, curve: 'basis' },
+    };
+
+// The SVG group that draws a node: flowchart ids look like "flowchart-<id>-<n>",
+// ER groups are tagged by attachEntityClicks below.
+function nodeElement(root, nodeId) {
+  if (KIND === 'er') return root.querySelector(`[data-entity="${nodeId}"]`);
+  const re = new RegExp(`^flowchart-${nodeId}-\\d+$`);
+  return [...root.querySelectorAll('.node')].find(n => re.test(n.id)) || null;
+}
+function allNodeElements(root) {
+  return root.querySelectorAll(KIND === 'er' ? '[data-entity]' : '.node');
+}
+
+// ER entities take no `click` directive: find each entity's group and bind it by hand.
+function attachEntityClicks(root, onClick) {
+  for (const name of Object.keys(NODES)) {
+    let group = root.querySelector(`g[id^="entity-${name}-"], g[id="entity-${name}"]`);
+    if (!group) {
+      const label = [...root.querySelectorAll('text, span, div, p')]
+        .find(el => el.textContent.trim() === name);
+      group = label && (label.closest('g.node') || label.closest('g'));
+    }
+    if (!group) { console.warn('entity not found:', name); continue; }
+    group.dataset.entity = name;
+    group.classList.add('wt-entity');
+    group.addEventListener('click', () => onClick(name));
+  }
+}
+
+function usePanZoom() {
+  const viewportRef = useRef(null), canvasRef = useRef(null), zoomDisplayRef = useRef(null);
+  const st = useRef({ zoom: 1, panX: 0, panY: 0 });
+  const drag = useRef({ on: false, lx: 0, ly: 0 });
+
+  const apply = useCallback(() => {
+    const { zoom, panX, panY } = st.current;
+    if (canvasRef.current) canvasRef.current.style.transform = `translate(${panX}px,${panY}px) scale(${zoom})`;
+    if (zoomDisplayRef.current) zoomDisplayRef.current.textContent = Math.round(zoom * 100) + '%';
+  }, []);
+
+  const fitToScreen = useCallback(() => {
+    const svg = canvasRef.current?.querySelector('svg');
+    const vp = viewportRef.current;
+    if (!svg || !vp) return;
+    const s = st.current;
+    const vw = vp.clientWidth, vh = vp.clientHeight;
+    const sw = canvasRef.current.getBoundingClientRect().width / s.zoom;
+    const sh = canvasRef.current.getBoundingClientRect().height / s.zoom;
+    const fit = Math.max(0.15, Math.min(2, Math.min((vw - 40) / sw, (vh - 40) / sh)));
+    s.zoom = fit; s.panX = (vw - sw * fit) / 2; s.panY = (vh - sh * fit) / 2;
+    apply();
+  }, [apply]);
+
+  useEffect(() => {
+    const vp = viewportRef.current;
+    if (!vp) return;
+    const onWheel = (e) => {
+      e.preventDefault();
+      const r = vp.getBoundingClientRect();
+      const mx = e.clientX - r.left, my = e.clientY - r.top, s = st.current;
+      const f = e.deltaY < 0 ? 1.12 : 1 / 1.12;
+      const nz = Math.min(4, Math.max(0.15, s.zoom * f)), sc = nz / s.zoom;
+      s.panX = mx - sc * (mx - s.panX); s.panY = my - sc * (my - s.panY); s.zoom = nz;
+      apply();
+    };
+    const onDown = (e) => {
+      if (e.target.closest('.node, .wt-entity')) return;
+      drag.current = { on: true, lx: e.clientX, ly: e.clientY };
+      vp.setPointerCapture(e.pointerId);
+    };
+    const onMove = (e) => {
+      const d = drag.current; if (!d.on) return;
+      st.current.panX += e.clientX - d.lx; st.current.panY += e.clientY - d.ly;
+      d.lx = e.clientX; d.ly = e.clientY; apply();
+    };
+    const onUp = () => { drag.current.on = false; };
+    vp.addEventListener('wheel', onWheel, { passive: false });
+    vp.addEventListener('pointerdown', onDown);
+    vp.addEventListener('pointermove', onMove);
+    vp.addEventListener('pointerup', onUp);
+    vp.addEventListener('pointercancel', onUp);
+    window.addEventListener('resize', fitToScreen);
+    return () => {
+      vp.removeEventListener('wheel', onWheel);
+      vp.removeEventListener('pointerdown', onDown);
+      vp.removeEventListener('pointermove', onMove);
+      vp.removeEventListener('pointerup', onUp);
+      vp.removeEventListener('pointercancel', onUp);
+      window.removeEventListener('resize', fitToScreen);
+    };
+  }, [apply, fitToScreen]);
+
+  const zoomIn = useCallback(() => { st.current.zoom = Math.min(4, st.current.zoom * 1.25); apply(); }, [apply]);
+  const zoomOut = useCallback(() => { st.current.zoom = Math.max(0.15, st.current.zoom / 1.25); apply(); }, [apply]);
+  return { viewportRef, canvasRef, zoomDisplayRef, zoomIn, zoomOut, fitToScreen };
+}
+
+function MermaidDiagram({ onNodeClick, onRendered }) {
+  const ref = useRef(null);
+  useEffect(() => {
+    window.nodeClickHandler = onNodeClick;
+    mermaid.initialize(MERMAID_CONFIG);
+    mermaid.render('walkthrough-diagram', DIAGRAM).then(({ svg, bindFunctions }) => {
+      if (!ref.current) return;
+      ref.current.innerHTML = svg;
+      bindFunctions?.(ref.current);
+      if (KIND === 'er') attachEntityClicks(ref.current, onNodeClick);
+      document.body.dataset.rendered = 'true';
+      onRendered();
+    }).catch((e) => {
+      console.error('Mermaid render failed:', e);
+      document.body.dataset.rendered = 'error';
+      if (ref.current) ref.current.textContent = 'Diagram failed to render: ' + e.message;
+    });
+    return () => { delete window.nodeClickHandler; };
+  }, [onNodeClick, onRendered]);
+  return h('div', { ref, className: 'mermaid-wrap' });
+}
+
+function Summary({ collapsed, onToggle }) {
+  if (collapsed) {
+    return h('div', {
+      onClick: onToggle,
+      className: 'fixed top-16 left-6 z-10 px-3 py-1.5 bg-wt-surface/60 backdrop-blur border border-wt-border rounded-full shadow-lg cursor-pointer hover:bg-wt-surface/80 transition-all duration-300',
+    }, h('span', { className: 'text-xs text-wt-muted font-medium' }, 'ℹ︎ Summary'));
+  }
+  return h('div', {
+    onClick: onToggle,
+    className: 'fixed top-16 left-6 z-10 max-w-lg px-4 py-3 bg-wt-surface/80 backdrop-blur border border-wt-border rounded-lg shadow-lg cursor-pointer transition-all duration-300',
+  },
+    h('p', { className: 'text-sm text-wt-muted leading-relaxed' }, SUMMARY),
+    h('p', { className: 'text-[0.65rem] text-wt-muted/50 mt-1.5' }, 'Click to dismiss'));
+}
+
+function DetailPanel({ nodeId, node, onClose }) {
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === 'Escape') onClose(); };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [onClose]);
+  const codeHtml = HIGHLIGHTED[nodeId];
+  return h('div', {
+    className: 'fixed top-4 right-4 bottom-4 w-[560px] max-w-[calc(100vw-2rem)] z-30 bg-wt-surface border border-wt-border rounded-xl shadow-2xl flex flex-col overflow-hidden',
+  },
+    h('button', {
+      onClick: onClose,
+      className: 'absolute top-3 right-3 z-10 w-7 h-7 rounded-md border border-wt-border bg-wt-raised text-wt-muted flex items-center justify-center text-lg hover:bg-wt-red hover:border-wt-red hover:text-white transition-colors',
+    }, '×'),
+    h('div', { className: 'flex-1 overflow-y-auto p-5' },
+      h('h2', { className: 'text-lg font-bold text-wt-fg mb-3 pr-9' }, node.title),
+      h('div', { className: 'dt-body' }, h('p', null, node.description)),
+      h('div', { className: 'dt-body' },
+        codeHtml
+          ? h('div', { dangerouslySetInnerHTML: { __html: codeHtml } })
+          : h('pre', { className: 'code-fallback' }, h('code', null, node.code))),
+      h('div', { className: 'mt-4 pt-3 border-t border-wt-border' },
+        h('div', { className: 'text-[0.7rem] uppercase tracking-wider text-wt-muted font-semibold mb-1.5' }, 'Files'),
+        h('code', { className: 'text-sm text-wt-file font-mono leading-relaxed break-all' },
+          node.files.map((f, i) => h('span', { key: i }, f, h('br'))))))
+  );
+}
+
+function ZoomControls({ zoomDisplayRef, onZoomIn, onZoomOut, onFit }) {
+  const btn = 'w-8 h-8 rounded-md border border-wt-border bg-wt-surface text-wt-muted hover:bg-wt-raised hover:text-wt-fg transition-colors text-sm';
+  return h('div', { className: 'fixed bottom-5 left-5 z-20 flex items-center gap-1.5' },
+    h('button', { className: btn, onClick: onZoomOut, title: 'Zoom out' }, '−'),
+    h('span', { ref: zoomDisplayRef, className: 'w-12 text-center text-xs text-wt-muted tabular-nums' }, '100%'),
+    h('button', { className: btn, onClick: onZoomIn, title: 'Zoom in' }, '+'),
+    h('button', { className: btn + ' w-auto px-2.5', onClick: onFit, title: 'Fit to screen' }, 'Fit'));
+}
+
+// Jump between the walkthroughs of this folder.
+function PageNav() {
+  return h('div', { className: 'fixed top-3.5 right-5 z-20' },
+    h('select', {
+      value: SLUG,
+      onChange: (e) => { window.location.href = `walkthrough-${e.target.value}.html`; },
+      className: 'bg-wt-surface border border-wt-border rounded-md text-xs text-wt-muted px-2 py-1.5 cursor-pointer',
+      'aria-label': 'Other walkthroughs',
+    }, PAGES.map(p => h('option', { key: p.slug, value: p.slug }, p.title))));
+}
+
+function App() {
+  const [activeId, setActiveId] = useState(null);
+  const [summaryCollapsed, setSummaryCollapsed] = useState(true);
+  const pz = usePanZoom();
+
+  const setActiveNode = useCallback((nodeId) => {
+    setActiveId(nodeId);
+    const root = document.querySelector('.mermaid-wrap');
+    allNodeElements(root).forEach(n => { n.style.opacity = nodeId ? '0.4' : '1'; });
+    const el = nodeId && nodeElement(root, nodeId);
+    if (el) el.style.opacity = '1';
+  }, []);
+  const closeDetail = useCallback(() => {
+    setActiveId(null);
+    allNodeElements(document.querySelector('.mermaid-wrap')).forEach(n => { n.style.opacity = '1'; });
+  }, []);
+  const onRendered = useCallback(() => { setTimeout(pz.fitToScreen, 50); }, [pz.fitToScreen]);
+
+  return h(React.Fragment, null,
+    h('header', { className: 'fixed top-0 inset-x-0 z-10 px-6 py-3.5 bg-gradient-to-b from-wt-bg to-transparent pointer-events-none' },
+      h('h1', { className: 'text-base font-semibold text-wt-fg' }, TITLE),
+      h('p', { className: 'text-sm text-wt-muted mt-0.5' }, SUBTITLE)),
+    h(Summary, { collapsed: summaryCollapsed, onToggle: () => setSummaryCollapsed(c => !c) }),
+    h('div', { ref: pz.viewportRef, className: 'w-full h-screen overflow-hidden cursor-grab active:cursor-grabbing' },
+      h('div', { ref: pz.canvasRef, className: 'origin-top-left will-change-transform inline-block p-[80px_60px_60px]' },
+        h(MermaidDiagram, { onNodeClick: setActiveNode, onRendered }))),
+    h(ZoomControls, { zoomDisplayRef: pz.zoomDisplayRef, onZoomIn: pz.zoomIn, onZoomOut: pz.zoomOut, onFit: pz.fitToScreen }),
+    h('div', { className: 'fixed bottom-5 left-1/2 -translate-x-1/2 z-20 flex flex-wrap justify-center gap-4 px-4 py-2 bg-wt-surface border border-wt-border rounded-lg shadow-xl' },
+      LEGEND.map(l => h('span', { key: l.label, className: 'flex items-center gap-1.5 text-xs text-wt-muted whitespace-nowrap' },
+        h('span', { className: 'w-2 h-2 rounded-full', style: { background: l.color } }), l.label))),
+    h(PageNav),
+    activeId && NODES[activeId] && h(DetailPanel, { nodeId: activeId, node: NODES[activeId], onClose: closeDetail }),
+    h('div', { className: 'fixed bottom-5 right-5 z-20 text-xs text-wt-muted opacity-50' },
+      h('kbd', null, 'Scroll'), ' zoom · ', h('kbd', null, 'Drag'), ' pan · Click nodes'));
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(h(App));
+</script>
+</body>
+</html>

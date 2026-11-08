@@ -1,0 +1,522 @@
+syntax = "proto3";
+
+package music_room.v1;
+
+import "google/api/annotations.proto";
+import "music_room/v1/dto/event.proto";
+
+option go_package = "music_room/v1;pbv1";
+
+// Public UUIDs on the wire, internal ids inside the server.
+//
+// Every request that names an object carries its `*_public_id` -- the UUID the
+// API hands back in a DTO. The matching int64 field is filled in by the
+// authorization interceptor once it has resolved that UUID and run the
+// permission check, so a client never sends one. That is what makes the object
+// that was CHECKED and the row the handler TOUCHES provably the same object.
+//
+// The caller's own id comes from the session token, never from the request: a
+// `*_public_id` naming the caller is verified against the session and rejected
+// when it disagrees. See backend/internal/interceptor/policy.go and
+// docs/permissions.md.
+
+// Music Track Vote: turns a playlist into a live, collaborative listening
+// session where members suggest songs and vote for what plays next.
+service EventService {
+  // Lists every event the caller can see.
+  //
+  // Every event the caller may view: their own (host, admin, editor or
+  // viewer -- any role) plus every public event, any host. Routed through
+  // OpenFGA ListObjects(can_view), not a Go WHERE clause -- see
+  // PlaylistService.ListPlaylists for why. Self-only: user_public_id must be
+  // the caller, so one user cannot list what another can see.
+  rpc GetMusicEvents(GetMusicEventsRequest) returns (GetMusicEventsResponse) {
+    option (google.api.http) = {get: "/v1/users/{user_public_id}/events"};
+  }
+  // Gets one event.
+  //
+  // Any caller who can view the event: anyone for a public event, members
+  // only for a private one. A missing event and a private event the caller
+  // cannot see both return NotFound.
+  rpc GetMusicEvent(GetMusicEventRequest) returns (GetMusicEventResponse) {
+    option (google.api.http) = {get: "/v1/events/{public_id}"};
+  }
+  // Invites a user to an event.
+  //
+  // Invites a user to a private event so they can find it, suggest songs and
+  // vote (V.2.1 visibility management). The host, an admin or an editor
+  // (event#can_invite). No separate acceptance step: the invitee is a member
+  // at once. An unknown event or invitee, or an invitee who blocked the
+  // caller, returns PermissionDenied, not NotFound.
+  rpc InviteToEvent(InviteToEventRequest) returns (InviteToEventResponse) {
+    option (google.api.http) = {
+      post: "/v1/events/{event_public_id}/members"
+      body: "*"
+    };
+  }
+  // Lists an event's members.
+  //
+  // Lists an event's members (the host plus anyone invited) so a caller can
+  // see who is invited to a private event. Any caller who can view the event.
+  rpc ListEventMembers(ListEventMembersRequest) returns (ListEventMembersResponse) {
+    option (google.api.http) = {get: "/v1/events/{event_public_id}/members"};
+  }
+  // Makes an event public or private after creation.
+  //
+  // Host or admin (event#can_change_settings). Made private, only its members
+  // can find and open it; anyone else who had it open loses it.
+  rpc SetEventVisibility(SetEventVisibilityRequest) returns (SetEventVisibilityResponse) {
+    option (google.api.http) = {
+      patch: "/v1/events/{event_public_id}/visibility"
+      body: "*"
+    };
+  }
+  // Changes an event's vote license.
+  //
+  // Changes an event's vote license (and its venue/vote-window for
+  // location_time) after creation. Host or admin (event#can_change_settings).
+  // An unknown event returns PermissionDenied.
+  rpc SetEventVoteLicense(SetEventVoteLicenseRequest) returns (SetEventVoteLicenseResponse) {
+    option (google.api.http) = {
+      patch: "/v1/events/{event_public_id}/vote-license"
+      body: "*"
+    };
+  }
+  // Creates an event.
+  //
+  // Starts a live playlist: creates an event, optionally seeding its vote
+  // queue from an existing playlist's songs (source_playlist_id). Any
+  // authenticated user; the caller becomes the host. Seeding requires the
+  // caller to be able to view the source playlist, otherwise NotFound.
+  rpc CreateEvent(CreateEventRequest) returns (CreateEventResponse) {
+    option (google.api.http) = {
+      post: "/v1/events"
+      body: "*"
+    };
+  }
+  // Suggests a song for the vote queue.
+  //
+  // Adds a song to the live vote queue. Allowed to whoever may vote under the
+  // event's vote license; the event must be scheduled or live. Never starts
+  // the radio, even when nothing plays: only the host's play does.
+  rpc SuggestSong(SuggestSongRequest) returns (SuggestSongResponse) {
+    option (google.api.http) = {
+      post: "/v1/events/{event_public_id}/queue"
+      body: "*"
+    };
+  }
+  // Votes for a queued song.
+  //
+  // Casts an upvote for a queued song. Upvote-only and idempotent: voting
+  // twice for the same entry is a no-op. Allowed to whoever may vote under
+  // the event's vote license; the event must be scheduled or live. An entry
+  // that belongs to another event returns NotFound.
+  rpc CastVote(CastVoteRequest) returns (CastVoteResponse) {
+    option (google.api.http) = {
+      post: "/v1/events/{event_public_id}/queue/{queue_entry_public_id}/vote"
+      body: "*"
+    };
+  }
+  // Lists the vote queue.
+  //
+  // Lists the live vote queue ordered by vote_count desc, then by the time
+  // the entry reached that vote count (ties broken in suggestion order). Any
+  // caller who can view the event.
+  rpc ListEventQueue(ListEventQueueRequest) returns (ListEventQueueResponse) {
+    option (google.api.http) = {get: "/v1/events/{event_public_id}/queue"};
+  }
+  // Removes a song from the vote queue.
+  //
+  // Un-suggests a song still waiting in the queue. Whoever suggested it, or
+  // the host/admin (queue_entry#can_remove) -- not legal once it started
+  // playing.
+  rpc RemoveQueueEntry(RemoveQueueEntryRequest) returns (RemoveQueueEntryResponse) {
+    option (google.api.http) = {delete: "/v1/events/{event_public_id}/queue/{queue_entry_public_id}"};
+  }
+
+  // Gets what is currently playing.
+  //
+  // The radio station: what is currently playing for this event. Any caller
+  // who can view the event.
+  rpc GetEventPlayback(GetEventPlaybackRequest) returns (GetEventPlaybackResponse) {
+    option (google.api.http) = {get: "/v1/events/{event_public_id}/playback"};
+  }
+  // Streams the live event: the event, what is playing and the vote queue at
+  // once, then again after every change -- a vote, a suggestion, play /
+  // pause / next / seek, the next song starting on its own, the host
+  // pausing, resuming or ending the event.
+  //
+  // Same permission as GetEventPlayback, checked when the stream opens and
+  // again before every send: a viewer who loses event#can_view (the event
+  // was deleted) gets NotFound and the stream ends. Each message is a whole
+  // state, the queue and viewer_can_control as this caller sees them.
+  rpc WatchEvent(WatchEventRequest) returns (stream WatchEventResponse) {
+    option (google.api.http) = {get: "/v1/events/{event_public_id}/watch"};
+  }
+  // Starts the next song (the top-voted one), and the event if not started.
+  //
+  // The "play / next" button. Stops the current song, if any, and plays the
+  // top-voted song of the queue. On an event not started yet (`scheduled`),
+  // this is what starts it: it becomes `live`, even before its starts_at.
+  // Nothing else starts an event or a song: not creating it, not suggesting.
+  //
+  // Who: the host, or a friend the host gave control of this event to (a
+  // licence on the device that plays, EventPlaybackDTO.speaker_device_id).
+  // The host's first call makes their device that one.
+  //
+  // FailedPrecondition when the event has ended or the queue is empty. The
+  // server also calls it on its own when a song ends.
+  rpc PlayNextInEventQueue(PlayNextInEventQueueRequest) returns (PlayNextInEventQueueResponse) {
+    option (google.api.http) = {
+      post: "/v1/events/{event_public_id}/playback/next"
+      body: "*"
+    };
+  }
+  // Pauses, resumes or seeks the song playing.
+  //
+  // The "pause / resume" button and the progress bar: acts on the song
+  // already playing, never starts one. The event stays `live` while its
+  // music is paused.
+  //
+  // Who: the same as PlayNextInEventQueue.
+  //
+  // FailedPrecondition when the event is not `live`. To start an event or
+  // its first song, use PlayNextInEventQueue
+  // (POST /v1/events/{event_public_id}/playback/next).
+  rpc SetEventPlayback(SetEventPlaybackRequest) returns (SetEventPlaybackResponse) {
+    option (google.api.http) = {
+      patch: "/v1/events/{event_public_id}/playback"
+      body: "*"
+    };
+  }
+
+  // Ends an event.
+  //
+  // Host or admin. Legal from any status but `ended` (docs/permissions.md
+  // §13), so an event that never started can be ended too. The host's first
+  // play is what makes an event live (PlayNextInEventQueue); pausing is the
+  // music's (SetEventPlayback), not the event's.
+  rpc EndEvent(EndEventRequest) returns (EndEventResponse) {
+    option (google.api.http) = {
+      post: "/v1/events/{event_public_id}/end"
+      body: "*"
+    };
+  }
+
+  // Deletes an event.
+  //
+  // Soft-deletes the event (deleted_at). Host-only, legal from any status.
+  // No cascade: every read and every id resolution already filters on
+  // deleted_at IS NULL, so the event becomes unreachable through every
+  // other RPC the instant this commits -- same pattern as
+  // PlaylistService.DeletePlaylist. Also cancels the event's auto-advance
+  // timer.
+  rpc DeleteEvent(DeleteEventRequest) returns (DeleteEventResponse) {
+    option (google.api.http) = {delete: "/v1/events/{event_public_id}"};
+  }
+}
+
+// Request for GetMusicEvent.
+message GetMusicEventRequest {
+  int64 id = 1; // Filled by the server; clients leave it unset.
+  // Filled by the server; clients leave it unset. Must be the host or an
+  // invited member for a private event.
+  int64 viewer_id = 2;
+  string public_id = 3; // the event's UUID.
+  string viewer_public_id = 4; // the caller; must match the session. May be omitted.
+}
+
+// Response for GetMusicEvent.
+message GetMusicEventResponse {
+  MusicEventDTO event = 1;
+}
+
+// Request for InviteToEvent.
+message InviteToEventRequest {
+  int64 event_id = 1; // Filled by the server; clients leave it unset.
+  int64 inviter_user_id = 2; // Filled by the server; clients leave it unset. Must be host, admin or editor.
+  int64 invitee_user_id = 3; // Filled by the server; clients leave it unset.
+  string event_public_id = 4;
+  string inviter_user_public_id = 5; // the caller; must match the session.
+  string invitee_user_public_id = 6; // the user to invite; must exist.
+}
+
+// Response for InviteToEvent. Empty.
+message InviteToEventResponse {}
+
+// Request for ListEventMembers.
+message ListEventMembersRequest {
+  int64 event_id = 1; // Filled by the server; clients leave it unset.
+  int64 viewer_id = 2; // Filled by the server; clients leave it unset. Must be able to view the event.
+  string event_public_id = 3;
+  string viewer_public_id = 4; // the caller; must match the session.
+}
+
+// Response for ListEventMembers: the host plus everyone invited.
+message ListEventMembersResponse {
+  repeated EventMemberDTO members = 1;
+}
+
+// Request for SetEventVoteLicense.
+message SetEventVoteLicenseRequest {
+  int64 event_id = 1; // Filled by the server; clients leave it unset.
+  int64 user_id = 2; // Filled by the server; clients leave it unset. Must be host or admin.
+  string vote_license = 3; // everyone | invited_only | location_time
+
+  // Required together when vote_license is "location_time"; ignored otherwise.
+  double venue_latitude = 4;
+  double venue_longitude = 5;
+  int32 venue_radius_meters = 6;
+  string vote_window_start = 7; // "HH:MM", venue-local time.
+  string vote_window_end = 8; // "HH:MM", venue-local time.
+  string vote_window_timezone = 9; // IANA zone, e.g. "Europe/Paris".
+  string event_public_id = 10;
+  string user_public_id = 11; // the caller; must match the session.
+}
+
+// Response for SetEventVoteLicense: the updated event.
+message SetEventVoteLicenseResponse {
+  MusicEventDTO event = 1;
+}
+
+// The event and its new visibility.
+message SetEventVisibilityRequest {
+  int64 event_id = 1; // Filled by the server; clients leave it unset.
+  int64 user_id = 2; // Filled by the server; clients leave it unset. Must be host or admin.
+  string visibility = 3; // public | private
+  string event_public_id = 4;
+  string user_public_id = 5; // the caller; may be omitted (taken from the session), must match it otherwise.
+}
+
+// The event as it is now.
+message SetEventVisibilityResponse {
+  MusicEventDTO event = 1;
+}
+
+// Request for GetMusicEvents.
+message GetMusicEventsRequest {
+  int64 user_id = 1; // Filled by the server; clients leave it unset.
+  string user_public_id = 2; // the caller; must match the session. Never another user.
+}
+
+// Response for GetMusicEvents: every event the caller can view.
+message GetMusicEventsResponse {
+  repeated MusicEventDTO events = 1;
+}
+
+// Request for CreateEvent.
+message CreateEventRequest {
+  // Filled by the server; clients leave it unset. The user ID of the event
+  // host (the one who will be able to manage the event).
+  int64 host_id = 1;
+  string name = 2; // required.
+  string description = 3;
+  string visibility = 4; // public | private; defaults to "public" when empty.
+  string vote_license = 5; // everyone | invited_only | location_time; defaults to "everyone" when empty.
+  // Filled by the server; clients leave it unset. 0 = start empty; otherwise
+  // seeds the queue with the playlist's songs.
+  int64 source_playlist_id = 6;
+
+  // Required together when vote_license is "location_time"; ignored otherwise.
+  double venue_latitude = 7;
+  double venue_longitude = 8;
+  int32 venue_radius_meters = 9;
+  string vote_window_start = 10; // "HH:MM", venue-local time.
+  string vote_window_end = 11; // "HH:MM", venue-local time.
+  string vote_window_timezone = 12; // IANA zone, e.g. "Europe/Paris".
+  string host_public_id = 13; // the caller; must match the session.
+  // Empty = start with an empty queue. Otherwise the caller must be able to
+  // view this playlist; its songs are copied into the queue.
+  string source_playlist_public_id = 14;
+
+  // When the event is planned to run, unix seconds. Both are required:
+  // ends_at must be after starts_at and not already past. A start in
+  // the past is accepted, so an event can start right away. Clients sort
+  // events into past / now / upcoming with these (MusicEventDTO.starts_at).
+  int64 starts_at = 15;
+  int64 ends_at = 16;
+}
+
+// Response for CreateEvent: the new event and its seeded queue.
+message CreateEventResponse {
+  MusicEventDTO event = 1;
+  repeated EventQueueEntryDTO queue = 2;
+  // The playback, once: an event starts silent, even seeded from a playlist,
+  // until the host presses play (PlayNextInEventQueue).
+  reserved 3;
+  reserved "playback";
+}
+
+// Request for SuggestSong.
+message SuggestSongRequest {
+  int64 event_id = 1; // Filled by the server; clients leave it unset.
+  int64 deezer_song_id = 2; // The ID of the song from the music provider service, not the internal song ID.
+  int64 user_id = 3; // Filled by the server; clients leave it unset.
+  string event_public_id = 4;
+  string user_public_id = 5; // the caller; must match the session.
+  // Where the suggester is. Optional, and only read under a location_time
+  // vote licence -- suggesting is gated by the same licence as voting
+  // (docs/permissions.md 11), and the venue radius half of that licence
+  // cannot be answered without them: CEL has no geospatial functions, so the
+  // graph checks the time window and Go checks the distance.
+  double suggester_latitude = 6;
+  double suggester_longitude = 7;
+}
+
+// Response for SuggestSong: the event and its updated queue.
+message SuggestSongResponse {
+  MusicEventDTO event = 1;
+  repeated EventQueueEntryDTO queue = 2;
+  // The playback, once: a suggestion never starts the radio, the host's play
+  // does (PlayNextInEventQueue).
+  reserved 3;
+  reserved "playback";
+}
+
+// Request for CastVote.
+message CastVoteRequest {
+  int64 event_id = 1; // Filled by the server; clients leave it unset.
+  int64 queue_entry_id = 2; // Filled by the server; clients leave it unset.
+  int64 user_id = 3; // Filled by the server; clients leave it unset.
+  double voter_latitude = 4; // optional, audit trail for location_time events.
+  double voter_longitude = 5; // optional, audit trail for location_time events.
+  string event_public_id = 6;
+  string queue_entry_public_id = 7; // must belong to event_public_id.
+  string user_public_id = 8; // the caller; must match the session.
+}
+
+// Response for CastVote: whether the vote counted, and the reordered queue.
+message CastVoteResponse {
+  bool accepted = 1; // false when the user had already voted or the song is no longer queued.
+  repeated EventQueueEntryDTO queue = 2;
+}
+
+// Request for ListEventQueue.
+message ListEventQueueRequest {
+  int64 event_id = 1; // Filled by the server; clients leave it unset.
+  // Filled by the server; clients leave it unset. Used to fill
+  // EventQueueEntryDTO.viewer_has_voted.
+  int64 viewer_id = 2;
+  string event_public_id = 3;
+  string viewer_public_id = 4; // the caller; must match the session.
+}
+
+// Response for ListEventQueue: the queue in vote order.
+message ListEventQueueResponse {
+  repeated EventQueueEntryDTO queue = 1;
+}
+
+// Request for RemoveQueueEntry.
+message RemoveQueueEntryRequest {
+  int64 event_id = 1; // Filled by the server; clients leave it unset.
+  int64 queue_entry_id = 2; // Filled by the server; clients leave it unset.
+  int64 user_id = 3; // Filled by the server; clients leave it unset.
+  string event_public_id = 4;
+  string queue_entry_public_id = 5; // must still be queued, not playing or played.
+  string user_public_id = 6; // the caller; must match the session.
+}
+
+// Response for RemoveQueueEntry: the event and its updated queue.
+message RemoveQueueEntryResponse {
+  MusicEventDTO event = 1;
+  repeated EventQueueEntryDTO queue = 2;
+}
+
+// Request for GetEventPlayback.
+message GetEventPlaybackRequest {
+  int64 event_id = 1; // Filled by the server; clients leave it unset.
+  int64 viewer_id = 2; // Filled by the server; clients leave it unset. Must be able to view the event.
+  string event_public_id = 3;
+  string viewer_public_id = 4; // the caller; must match the session.
+}
+
+// The event to follow.
+message WatchEventRequest {
+  int64 event_id = 1; // Filled by the server; clients leave it unset.
+  int64 viewer_id = 2; // Filled by the server; clients leave it unset.
+  string event_public_id = 3;
+  string viewer_public_id = 4; // the caller; may be omitted (taken from the session), must match it otherwise.
+}
+
+// One state of the live event: what GetMusicEvent, GetEventPlayback and
+// ListEventQueue answer, together.
+message WatchEventResponse {
+  MusicEventDTO event = 1;
+  EventPlaybackDTO playback = 2;
+  bool viewer_can_control = 3;
+  repeated EventQueueEntryDTO queue = 4; // ranked, as ListEventQueue.
+  // Whether the caller may vote and suggest songs (event#can_vote: the
+  // licence, and for location_time the vote window; the venue radius is
+  // only checked on the vote itself, with the caller's position). The app
+  // shows the ballots and the + only then.
+  bool viewer_can_vote = 5;
+}
+
+// Response for GetEventPlayback.
+message GetEventPlaybackResponse {
+  EventPlaybackDTO playback = 1;
+  // Whether the caller may press play / pause / next / seek for this event,
+  // so the app shows the controls only to the people in control: the host,
+  // and a friend holding a licence on the speaker device for this event or
+  // standing (none before the host's first play, which sets the speaker).
+  bool viewer_can_control = 2;
+}
+
+// Request for PlayNextInEventQueue.
+message PlayNextInEventQueueRequest {
+  int64 event_id = 1; // Filled by the server; clients leave it unset.
+  int64 user_id = 2; // Filled by the server; clients leave it unset. Becomes the new controller_user_id.
+  string event_public_id = 4;
+  string user_public_id = 5; // the caller; must match the session.
+  // A device the caller named, once: a delegate's licence is checked against
+  // the event's speaker device instead (SetEventSpeaker).
+  reserved 3, 6;
+  reserved "device_id", "device_public_id";
+}
+
+// Response for PlayNextInEventQueue: the new playback and the remaining queue.
+message PlayNextInEventQueueResponse {
+  EventPlaybackDTO playback = 1;
+  repeated EventQueueEntryDTO queue = 2; // no longer contains the song that just started.
+}
+
+// Request for SetEventPlayback.
+message SetEventPlaybackRequest {
+  int64 event_id = 1; // Filled by the server; clients leave it unset.
+  int64 user_id = 2; // Filled by the server; clients leave it unset.
+  bool is_paused = 3; // true pauses, false resumes.
+  int32 position_ms = 4; // playback position to seek to, in milliseconds.
+  string event_public_id = 6;
+  string user_public_id = 7; // the caller; must match the session.
+  // A device the caller named, once: checked against the speaker device
+  // instead, as PlayNextInEventQueue.
+  reserved 5, 8;
+  reserved "device_id", "device_public_id";
+}
+
+// Response for SetEventPlayback: the updated playback.
+message SetEventPlaybackResponse {
+  EventPlaybackDTO playback = 1;
+}
+
+// Request for EndEvent.
+message EndEventRequest {
+  int64 event_id = 1; // Filled by the server; clients leave it unset.
+  string event_public_id = 2;
+}
+
+// Response for EndEvent: the event, now ended.
+message EndEventResponse {
+  MusicEventDTO event = 1;
+}
+
+// Request for DeleteEvent.
+message DeleteEventRequest {
+  int64 event_id = 1; // Filled by the server; clients leave it unset.
+  string event_public_id = 2;
+}
+
+// Response for DeleteEvent.
+message DeleteEventResponse {
+  MusicEventDTO event = 1; // deleted_at now set.
+}

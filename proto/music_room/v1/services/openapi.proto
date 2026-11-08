@@ -1,0 +1,101 @@
+syntax = "proto3";
+
+package music_room.v1;
+
+import "protoc-gen-openapiv2/options/annotations.proto";
+
+option go_package = "music_room/v1;pbv1";
+// API-wide OpenAPI settings, and nothing else. protoc-gen-openapiv2 runs with
+// allow_merge=true (buf.gen.yaml), so this option lands in the single merged
+// api_spec.swagger.json that Swagger UI serves at /docs/.
+//
+// Per-RPC overrides live next to the RPC: the public ones (Register, Login,
+// OAuthLogin, RequestPasswordReset, ResetPassword) reset `security` to an
+// empty list with an openapiv2_operation option.
+option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_swagger) = {
+  info: {
+    title: "Music Room API"
+    version: "v1"
+    description:
+      "REST mapping of the Music Room gRPC API (grpc-gateway). Every route is also "
+      "a gRPC method on the same server.\n\n"
+      "**Identifiers.** Objects are named by their public UUID (`*_public_id`). The "
+      "int64 fields next to them are filled in by the server after the permission "
+      "check: clients leave them unset. A `*_public_id` naming the caller may be "
+      "omitted (it is taken from the session) and is rejected when it names someone else.\n\n"
+      "**Authentication.** Sign in with `POST /v1/auth/login` (or `/v1/auth/oauth/login`), "
+      "then send the returned `session_token` as `Authorization: Bearer <token>`. In "
+      "Swagger UI, click Authorize and paste `Bearer <token>`, prefix included. "
+      "Routes without a lock icon are public.\n\n"
+      "**JSON.** Produced by protojson. `int64` fields (ids, unix-second timestamps, "
+      "counters) are strings: `\"id\": \"42\"`. `bytes` fields are standard base64. "
+      "A field left out of a response holds its zero value (`\"\"`, `\"0\"`, `false`, `[]`): "
+      "there is never `null`. A path parameter is not repeated in the body; on a GET "
+      "or DELETE, the other fields go in the query string.\n\n"
+      "**Errors.** Every error has the body `{\"code\": 5, \"message\": \"...\", \"details\": []}`, "
+      "where `code` is the gRPC code: 3 InvalidArgument and 9 FailedPrecondition (400), "
+      "16 Unauthenticated (401), 7 PermissionDenied (403), 5 NotFound (404, also for an "
+      "object the caller may not see), 6 AlreadyExists (409), 13 Internal (500).\n\n"
+      "**gRPC.** The same methods are served as native gRPC on port 50051, with server "
+      "reflection; this REST gateway listens on 8081."
+  }
+  schemes: [
+    HTTP,
+    HTTPS
+  ]
+  consumes: "application/json"
+  produces: "application/json"
+  security_definitions: {
+    security: {
+      key: "bearer"
+      value: {
+        type: TYPE_API_KEY
+        in: IN_HEADER
+        name: "Authorization"
+        description: "Session token from Login or OAuthLogin, as `Bearer <token>`."
+      }
+    }
+  }
+  security: {
+    security_requirement: {
+      key: "bearer"
+      value: {}
+    }
+  }
+  responses: {
+    key: "400"
+    value: {
+      description: "InvalidArgument or FailedPrecondition: the request is malformed or not allowed in the current state."
+      schema: {
+        json_schema: {ref: "#/definitions/rpcStatus"}
+      }
+    }
+  }
+  responses: {
+    key: "401"
+    value: {
+      description: "Unauthenticated: missing, malformed, expired or revoked session token."
+      schema: {
+        json_schema: {ref: "#/definitions/rpcStatus"}
+      }
+    }
+  }
+  responses: {
+    key: "403"
+    value: {
+      description: "PermissionDenied: the caller may not perform this call on this object."
+      schema: {
+        json_schema: {ref: "#/definitions/rpcStatus"}
+      }
+    }
+  }
+  responses: {
+    key: "404"
+    value: {
+      description: "NotFound: the object does not exist, or the caller may not see it."
+      schema: {
+        json_schema: {ref: "#/definitions/rpcStatus"}
+      }
+    }
+  }
+};

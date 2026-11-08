@@ -1,0 +1,34 @@
+syntax = "proto3";
+
+package music_room.v1;
+
+option go_package = "music_room/v1;pbv1";
+
+// Data types for the delegation service (Music Control Delegation, V.2.2).
+
+// A device registered to a user's account, the target of playback control.
+message DeviceDTO {
+  int64 id = 1; // internal id; clients use public_id.
+  // The id a client names this device by: control licences, and every
+  // playback command routed through it, are authorized against device:<uuid>.
+  string public_id = 7;
+  int64 user_id = 2; // internal id of the owner.
+  string device_identifier = 3; // stable id the client generates once at install time.
+  string name = 4;
+  string platform = 5; // ios | android | web | desktop
+  bool is_active = 6;
+}
+
+// A grant of playback control over one device to a friend. event_id = 0 means
+// a standing grant ("you can drive my speaker"); set means "for this event
+// only".
+message DeviceControlLicenseDTO {
+  int64 id = 1; // the license_id RevokeDeviceControl takes.
+  int64 device_id = 2; // internal id.
+  int64 grantee_user_id = 3; // internal id of the friend who received control.
+  int64 granted_by_id = 4; // internal id of the device owner.
+  int64 event_id = 5; // internal id; 0 = standing grant.
+  int64 created_at = 6; // unix seconds.
+  string grantee_user_public_id = 7; // the friend, as the app names them.
+  string event_public_id = 8; // empty = standing grant.
+}

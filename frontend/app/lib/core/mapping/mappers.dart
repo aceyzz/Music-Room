@@ -1,0 +1,9 @@
+export 'song/song.mapping.dart';
+export 'song/song_detail.mapping.dart';
+export 'song/song_event.mapping.dart';
+export 'friend.mapping.dart';
+export 'playlist.mapping.dart';
+export 'music_event.mapping.dart';
+export 'song/song_detail_event.mapping.dart';
+export 'auth.mapping.dart';
+export 'user.mapping.dart';
